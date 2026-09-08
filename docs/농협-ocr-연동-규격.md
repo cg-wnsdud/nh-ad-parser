@@ -30,6 +30,35 @@
 
 ---
 
+## 0-1. 용어 — 이 플랫폼 안에는 모델이 여러 개다
+
+가이드가 약어로 구분해 쓴다. **이걸 구분하지 않으면 "OCR 인데 왜 신뢰도가 없나" 를
+설명할 수 없다.**
+
+| 약어 | 뜻 | 하는 일 | 근거 |
+|---|---|---|---|
+| **DLA** | Document Layout Analysis | 영역 검출 + 종류 분류(9종) | p.1 "DLA(Document Layout Analysis) 분석 결과", p.30 `dla_score_th` |
+| **STR** | Scene Text Recognition | **글자 인식** (= 좁은 의미의 OCR) | p.30 `str_score_th` "STR 결과 confidence threshold 설정" |
+| **TSR** | Table Structure Recognition | 표 행·열 구조 인식 | p.29 `tsr_model_name`, p.30 `draw_tsr` |
+| **CD** | Cell Detection | 표 셀 검출 | p.56 `cells[].confidence` = "CD 모델 confidence (현재는 -1)" |
+
+`prj_config` 에 `dla_score_th` 와 `str_score_th` 가 **따로** 있는 것이 이 둘이 별개
+모델이라는 증거다(p.30).
+
+**결과 JSON 이 노출하는 `confidence` 는 DLA(영역 검출) 신뢰도뿐이다.** STR(글자 인식)
+신뢰도는 내부에서 `str_score_th` 로 걸러내는 데 쓰지만 결과에 담아 주지 않는다.
+전환 계획의 G1(줄 단위 신뢰도 없음)이 정확히 이 이야기다.
+
+우리 쪽과 대응시키면 짝이 하나가 아니라 셋이다 — 그래서 이 전환은 "OCR 엔진 교체" 가
+아니라 **PP-StructureV3 계층 전체 교체**다.
+
+```text
+PaddleX PP-StructureV3 =  레이아웃 검출  +  PP-OCR(글자 인식)  +  표 인식
+ETL with LLM           =  DLA           +  STR               +  TSR / CD
+```
+
+---
+
 ## 1. API 전체 목록 (23개)
 
 `*` = 우리 광고심의 파이프라인에 필요한 것.
@@ -68,10 +97,12 @@
 
 ## 2. 우리가 쓸 최소 호출 흐름
 
+> **2026-09-08 담당자 회신으로 확정:** `ws_id`(워크스페이스)는 **AgileSoDA 측이 생성해
+> 전달**한다. 따라서 워크스페이스 생성·조회 API(1.10~1.15)와 계정·팀 API(1.1~1.9)는
+> **우리가 호출할 일이 없다.** 우리가 실제로 쓰는 것은 아래 4개뿐이다.
+
 ```text
-[선행 1회] 워크스페이스 확보
-  POST /api/v1/workspace          (없으면 생성)  → data.id = ws_id
-  또는 POST /api/v1/workspace/list (있으면 조회)
+[선행] ws_id 를 받는다 (우리가 만들지 않는다)
 
 [문서 1건마다]
   1) POST /api/v1/etl/auto/start          multipart: tr_data(JSON 문자열) + upfiles
@@ -418,11 +449,42 @@ app/custom_extension/
     ├── api/ modules/ schemas/ services/
 ```
 
-- `extract()` — `extract_type` 이 `CUSTOMIZE` 일 때 호출되는 **프로젝트별 추출 로직**.
-- `transform()` — DLA 결과 후처리.
-  `custom_postprocess_dla(input_file_path, dla_result_path, ["pages", "page_grouped", "simple"])`.
-- `get_custom_routers()` — 프로젝트별 커스텀 API 엔드포인트를 플랫폼에 등록
-  (`CustomRouter(router=..., prefix="/api/v1/llm", tags=["CUSTOM"])`).
+| 훅 | 시그니처 | 언제 불리나 | DLA 와의 관계 |
+|---|---|---|---|
+| `extract()` | `(input_path, output_path, digitize_config)` (p.53) | `ExtractType.CUSTOMIZE` 일 때만 | **DLA 를 안 부른다** |
+| `transform()` | `(input_file_path, dla_result_path, exec_args, stop_flag)` (p.54) | DLA 완료 후 | **`dla_result_path` 를 받는다 = DLA 경로 위** |
+| `get_custom_routers()` | `→ list[CustomRouter]` (p.54) | 서버 기동 시 | 무관. 커스텀 엔드포인트 등록 |
+
+### ⚠ `CUSTOMIZE` 분기는 `dla_task()` 를 부르지 않는다
+
+p.53 의 `etl_service.py` 발췌를 분기별로 대조하면 드러난다.
+
+```python
+if   extract_type == ExtractType.DLA_AND_PARSER:  await dla_task(); await parser_task()
+elif extract_type == ExtractType.DLA_ONLY:        await dla_task()
+elif extract_type == ExtractType.PARSER_ONLY:     await parser_task()
+elif extract_type == ExtractType.CUSTOMIZE:
+    if custom_extension := CustomExtension.create():
+        await custom_extension.extract(input_file_path, output_dir_path, digitize_config)
+        # ← dla_task() 가 없다
+```
+
+**그래서 `extract()` 를 "DLA 앞의 전처리 자리" 로 쓸 수 있는지가 불확실하다.** 전처리만
+하고 DLA 를 이어 부를 수 없다면, `CUSTOMIZE` 를 쓰는 순간 OCR 도 우리가 들고 들어가야
+한다 — 농협 OCR 을 쓰라는 요구와 어긋난다. **애자일소다에 확인해야 하는 항목이다.**
+
+반면 `transform()` 은 `dla_result_path` 를 받으므로 **DLA 결과 후처리는 확실히 가능**하다.
+"DLA 결과를 우리 형식으로 바꾸는 일" 만 필요하다면 이 훅으로 된다.
+
+`extract()` 가 `output_path` 를 받는 점도 단서다 — 여기에 DLA 결과 형식으로 파일을 쓰면
+이후 단계가 이어지는지 함께 물어볼 것.
+
+### 원문에 없는 것
+
+- `transform()` 예시가 `custom_postprocess_dla(..., ["pages", "page_grouped", "simple"])`
+  를 부르는데(p.54) **`simple` 은 `res_type` 표(p.29·p.39)에 없다.**
+- API 는 `prj_config` 로 받는데(p.28) `extract()` 에는 `digitize_config` 로 들어온다(p.53).
+  같은 값인지 확인이 필요하다.
 
 `docker-compose.yml` 의 `${CUSTOM_EXTENSION_PATH}` 마운트로 코드를 넣는다.
 이 경로를 쓰면 우리 광고 파싱 후처리가 **플랫폼 내부에서** 돌고 결과 JSON 종류를

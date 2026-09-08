@@ -41,10 +41,19 @@ PaddleX·Gemma 는 사내 서버에 있고 **WireGuard VPN 이 연결돼 있어�
 산출물이 그럴듯하게 나온다 — 전례 있음).
 
 > **진행 중:** 농협 내부 플랫폼(AgileSoDA `ETL with LLM`)으로 OCR 계층을 옮기는
-> 작업이 있다. 규격은 [docs/농협-ocr-연동-규격.md](docs/농협-ocr-연동-규격.md),
-> 격차·전환 설계·미확인 항목은 [docs/농협-ocr-전환-계획.md](docs/농협-ocr-전환-계획.md).
-> Default JSON → IR 변환기는 `ocr/etlwithllm.py` 에 있고, HTTP 호출부는 접속 정보를
-> 받은 뒤 붙인다. `ocr/paddlex.py` 는 A/B 기준선으로 남긴다.
+> 작업이 있다. 이 API 는 **농협 폐쇄망 안에서만 호출**할 수 있어 현장 방문이 유일한
+> 검증 창구다.
+>
+> | 문서·도구 | 역할 |
+> | --- | --- |
+> | [docs/농협-ocr-연동-규격.md](docs/농협-ocr-연동-규격.md) | 받은 API 가이드 58쪽 정리 (모순·공백 포함) |
+> | [docs/농협-ocr-전환-계획.md](docs/농협-ocr-전환-계획.md) | 격차 11건 · 전환 설계 · 회신 질문 |
+> | [docs/농협-ocr-현장점검.md](docs/농협-ocr-현장점검.md) | 현장 절차·반입물·시험 항목 T1~T11 |
+> | `ocr/etlwithllm.py` | Default JSON → IR 변환기 (HTTP 호출부는 접속 정보 확보 후) |
+> | `tools/etl_probe.py` | 현장 반입용 프로브. **의존성 0, 단일 파일** |
+> | `tools/etl_mock.py` | 방문 전 리허설용 목 서버 |
+>
+> `ocr/paddlex.py` 는 A/B 기준선으로 남긴다.
 
 ## 산출물 구조
 
