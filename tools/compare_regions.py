@@ -33,10 +33,12 @@ from nh_parser import config as CFG                    # noqa: E402
 CASES = [
     ("baseline", "현행 small · 겹침200", {}),
     ("server", "서버기본 미지정 · 겹침200", {"paddlex_layout_merge_bboxes_mode": "server"}),
-    ("cand", "후보 large · 겹침400",
+    ("cand", "후보A large · 겹침400",
      {"paddlex_layout_merge_bboxes_mode": "large", "tile_overlap_px": 400}),
+    ("small400", "후보B small · 겹침400", {"tile_overlap_px": 400}),
 ]
-COLORS = {"baseline": "#d92b2b", "server": "#1a73e8", "cand": "#0f9d58"}
+COLORS = {"baseline": "#d92b2b", "server": "#1a73e8", "cand": "#0f9d58",
+          "small400": "#8e24aa"}
 IMG_EXTS = {".png", ".jpg", ".jpeg"}
 
 
@@ -160,24 +162,29 @@ def build_html(doc_name: str, cases: list[tuple[str, str, dict]], images: dict) 
                      f"영역 {regions} / 줄 {lines} &nbsp;&nbsp;")
     parts.append("</div></header>")
 
-    # 현행에서는 따로였는데 후보에서 하나가 된 자리
+    # 현행에서는 따로였는데 다른 설정에서 하나가 된 자리
     by_key = {k: d for k, _, d in cases}
-    rows = []
-    cand_pages = by_key["cand"].get("pages") or []
-    for page_index, page in enumerate(by_key["baseline"].get("pages") or []):
-        if page_index >= len(cand_pages):
+    for key, name, doc in cases:
+        if key == "baseline":
             continue
-        for group in merge_groups(page, cand_pages[page_index]):
-            src = "<br>".join(f"- {esc(region_text(a)[:120])}" for a in group["sources"])
-            rows.append(f"<tr><td>{page_index + 1}</td>"
-                        f"<td>{esc(group['target'].get('region_id'))}<br>"
-                        f"<span class='k'>{esc(group['target'].get('bbox'))}</span></td>"
-                        f"<td>{src}</td></tr>")
-    parts.append("<div class='merged'><table><tr><th>쪽</th>"
-                 "<th>후보에서 하나가 된 영역</th>"
-                 f"<th>현행에서는 따로였던 것 — {len(rows)}곳</th></tr>"
-                 + ("".join(rows) or "<tr><td colspan='3'>합쳐진 자리 없음</td></tr>")
-                 + "</table></div>")
+        rows = []
+        other_pages = doc.get("pages") or []
+        for page_index, page in enumerate(by_key["baseline"].get("pages") or []):
+            if page_index >= len(other_pages):
+                continue
+            for group in merge_groups(page, other_pages[page_index]):
+                src = "<br>".join(f"- {esc(region_text(a)[:110])}" for a in group["sources"])
+                rows.append(f"<tr><td>{page_index + 1}</td>"
+                            f"<td>{esc(group['target'].get('region_id'))} "
+                            f"<span class='k'>{esc(group['target'].get('label'))}</span><br>"
+                            f"<span class='k'>{esc(group['target'].get('bbox'))}</span></td>"
+                            f"<td>{src}</td></tr>")
+        parts.append(f"<div class='merged'><table><tr><th colspan='3' "
+                     f"style='background:{COLORS[key]};color:#fff'>{esc(name)} — "
+                     f"현행에서 따로였다가 하나가 된 자리 {len(rows)}곳</th></tr>"
+                     "<tr><th>쪽</th><th>합쳐진 영역</th><th>삼켜진 현행 영역</th></tr>"
+                     + ("".join(rows) or "<tr><td colspan='3'>없음</td></tr>")
+                     + "</table></div>")
 
     # 쪽마다 3열 이미지
     n_pages = max(len(d.get("pages") or []) for _, _, d in cases)
@@ -285,17 +292,19 @@ def main() -> None:
         index_rows.append((path.stem, {k: _summary(d)[0] for k, _, d in docs}, page_path.name))
         print(f"   -> {page_path}", flush=True)
 
+    head = "".join(f"<th>{esc(n)}</th>" for _, n, _ in CASES) + "".join(
+        f"<th>{esc(n)} - 현행</th>" for k, n, _ in CASES if k != "baseline")
     rows = "".join(
         f"<tr><td><a href='{esc(fn)}'>{esc(name)}</a></td>"
-        f"<td>{c['baseline']}</td><td>{c['server']}</td><td>{c['cand']}</td>"
-        f"<td>{c['server'] - c['baseline']:+d}</td><td>{c['cand'] - c['baseline']:+d}</td></tr>"
+        + "".join(f"<td>{c[k]}</td>" for k, _, _ in CASES)
+        + "".join(f"<td>{c[k] - c['baseline']:+d}</td>"
+                  for k, _, _ in CASES if k != "baseline") + "</tr>"
         for name, c, fn in index_rows)
     (args.out / "index.html").write_text(
         "<!doctype html><meta charset='utf-8'><title>영역 분할 대조</title>"
-        f"<style>{CSS}</style><header><h1>영역 분할 설정 대조</h1></header>"
-        "<div class='merged'><table><tr><th>문서</th><th>현행 small/200</th>"
-        "<th>서버기본/200</th><th>후보 large/400</th><th>서버기본-현행</th>"
-        "<th>후보-현행</th></tr>" + rows + "</table></div>", encoding="utf-8")
+        f"<style>{CSS}</style><header><h1>영역 분할 설정 대조 — 영역 수</h1></header>"
+        f"<div class='merged'><table><tr><th>문서</th>{head}</tr>{rows}</table></div>",
+        encoding="utf-8")
     print(f"\n목차 -> {args.out / 'index.html'}")
 
 
