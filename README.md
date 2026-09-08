@@ -1,12 +1,11 @@
 # nh-ad-parser
 
-광고물(PDF·이미지·HWP)을 넣으면 **글자·좌표·영역**이 담긴 JSON 하나가 나온다.
+광고물(PDF·이미지·HWP)을 넣으면 **글자·좌표·영역 원본**, **템플릿·판독 근거(P1)**,
+**다음 심의 단계용 영역 입력(P3)** JSON이 나온다.
 
 ```
-입력 ──► 판별 ──► 렌더/분할 ──► OCR·레이아웃 ──► 영역 조립 ──► parse JSON
-        triage    canvas        PaddleX          regions
-                  tiling        PP-StructureV3   cards
-                  bands                          gap
+입력 ─► 판별·OCR·영역 조립 ─► parse ─► 템플릿 선택·구분 라벨 ─► evidence(P1)
+                                                        └─► review-input(P3)
 ```
 
 `nh-ad-review-poc` 에서 **파싱 계층만** 떼어내 구조를 다시 잡은 저장소다.
@@ -18,20 +17,46 @@
 ```bash
 uv sync
 cp .env.example .env      # PADDLEX_URL / GEMMA_URL / GEMMA_MODEL 채우기
-uv run python tools/parse.py --input <파일 또는 폴더> --out out/
+uv run python tools/parse.py --input <파일 또는 폴더> --out out/<날짜>/<라벨> --preview
 ```
+
+`out/` 을 날짜별로 정리하는 규칙과 예시는
+[docs/테스트-실행-지침.md](docs/테스트-실행-지침.md) 참고.
 
 ```
 ▶ [예금성상품-적금] 올원e적금.png
-  쪽 1 / 영역 38 / 줄 73 / 17초  → out\parse\[예금성상품-적금] 올원e적금.json
+  쪽 1 / 영역 38 / 줄 73 / ...초  → out\<날짜>\<라벨>\parse\...json
+  템플릿 예금성상품-적립식 (confirmed) / 라벨 ... / 검수영역 ...
+  P1 → out\<날짜>\<라벨>\evidence\...json
+  P3 → out\<날짜>\<라벨>\review-input\...json
 ```
+
+기본 실행은 영역별 VLM Reader/Judge까지 수행한다. OCR·레이아웃 원본만 빠르게 확인하려면
+`--parse-only`를 사용한다. 전체 출력에서 Reader/Judge만 끄려면 `--region-reading off`를
+명시한다.
 
 PaddleX·Gemma 는 사내 서버에 있고 **WireGuard VPN 이 연결돼 있어야** 응답한다.
 엔드포인트 설정을 확인하려면 `.env` 의 `GEMMA_URL` 을 `/models` 로 바꿔 GET 해 본다
 (모델명 접두어가 바뀌면 VLM 호출이 전부 400 으로 죽는데 OCR 은 멀쩡히 돌아
 산출물이 그럴듯하게 나온다 — 전례 있음).
 
+> **진행 중:** 농협 내부 플랫폼(AgileSoDA `ETL with LLM`)으로 OCR 계층을 옮기는
+> 작업이 있다. 규격은 [docs/농협-ocr-연동-규격.md](docs/농협-ocr-연동-규격.md),
+> 격차·전환 설계·미확인 항목은 [docs/농협-ocr-전환-계획.md](docs/농협-ocr-전환-계획.md).
+> Default JSON → IR 변환기는 `ocr/etlwithllm.py` 에 있고, HTTP 호출부는 접속 정보를
+> 받은 뒤 붙인다. `ocr/paddlex.py` 는 A/B 기준선으로 남긴다.
+
 ## 산출물 구조
+
+산출물은 역할이 다른 세 층으로 나뉜다.
+
+| 폴더 | 역할 |
+| --- | --- |
+| `parse/` | 파서의 원시 `AdDocument`. 기존 호환 및 파싱 결함 진단용 |
+| `evidence/` | P1. parse 전부 + `line_ref` + VLM/Judge + 템플릿 선택 + 구분값 span |
+| `review-input/` | P3. 영역을 유지하고 OCR/VLM 중 선택된 문구 하나를 다음 심의 단계에 전달 |
+
+세부 계약과 텍스트 선택 정책은 [docs/출력-계약.md](docs/출력-계약.md) 참고.
 
 ```jsonc
 {
@@ -75,18 +100,23 @@ PaddleX·Gemma 는 사내 서버에 있고 **WireGuard VPN 이 연결돼 있어�
 | `src/nh_parser/ocr/` | `paddlex`(PP-StructureV3 호출) `tiling`(타일 분할) `bands`(글자밀도 밴드) |
 | `src/nh_parser/layout/` | `regions`(줄→영역 배정) `cards`(카드 분할) `gap`(수직 갭 분리) |
 | `src/nh_parser/vlm/` | `client`(Gemma) `cache` `direct` `view` `field_judge` `reading`(판독 교차검증) |
+| `src/nh_parser/review/` | 19종 템플릿 선택, 영역별 구분값 판정, P1/P3 출력 계약 |
+| `src/nh_parser/templates/ad_templates.json` | 농협 HWPX 표에서 생성한 19종 템플릿 카탈로그 |
 | `src/nh_parser/pipeline.py` | 위를 순서대로 엮는다. 진입점은 `process_file(path)` |
-| `tools/parse.py` | CLI |
-| `tests/` | 176 통과 / 37 건너뜀(샘플 PDF 필요) |
+| `tools/parse.py` | parse/P1/P3를 한 번에 만드는 CLI |
+| `tools/build_review.py` | 저장된 parse JSON에서 OCR 재실행 없이 템플릿·P1·P3 재생성 |
+| `tools/build_template_catalog.py` | 템플릿 HWPX의 실제 표 셀에서 카탈로그 재생성 |
+| `tests/` | 187 통과 / 37 건너뜀(샘플 PDF 필요) |
 
 ## 범위 — 여기 없는 것
 
-이 저장소는 **"무엇이 어디에 적혀 있나"까지**다. "그래서 규정에 맞나"는 하지 않는다.
+이 저장소는 **"무엇이 어디에 적혀 있고, 확정 템플릿의 어느 구분값인가"까지**다.
+"그래서 규정에 맞나"는 다음 심의 단계의 책임이다.
 
 | 없는 것 | 어디 있(었)나 |
 | --- | --- |
-| 템플릿 판정·항목 라벨링 | `nh-ad-review-poc` 의 `ad_template.py` |
-| 심의 근거 JSON·검수 화면 | 같은 곳 `ad_export.py`, `ad_review_*.py` |
+| 규정 검색·준수 여부 판정 | 다음 심의 엔진 |
+| 웹 검수 화면 | 아직 이관하지 않음 |
 | 필드 추출·정규화 내보내기 | `extract.py`, `normalized_export.py`, `kl_export.py` |
 | VLM 역할 판정 | `vlm_judge.py` |
 
@@ -94,9 +124,8 @@ PaddleX·Gemma 는 사내 서버에 있고 **WireGuard VPN 이 연결돼 있어�
 덮어쓰는 것이고, 그 모듈은 라벨링 계층에 있어 여기 없다. 규칙 결과를 최종 역할로
 믿으면 안 된다.
 
-라벨링을 여기로 가져오지 않은 이유는 2026-09-07 실험에서 **라벨 설명 방식이
-미확정으로 판명**됐기 때문이다(설명을 넣으니 정확도가 23/33 → 18/33 로 떨어졌다).
-확정된 뒤에 옮기는 게 맞다.
+템플릿 구분값 판정은 인공적으로 작성한 라벨 설명 대신 농협 HWPX의 실제 예시문구와
+기재요령을 사용한다. VLM 출력은 선택된 템플릿의 구분 enum 밖으로 나갈 수 없다.
 
 ## HWP 입력
 
