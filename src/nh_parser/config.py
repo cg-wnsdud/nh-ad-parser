@@ -205,6 +205,7 @@ class Settings:
     product_group_keywords: dict = field(
         default_factory=lambda: {
             "카드": ["카드상품", "카드"],
+            "투자성": ["투자성", "ISA", "개인종합자산관리계좌", "IRP", "퇴직연금", "펀드"],
             "예금성": ["예금성", "예금", "적금", "입출금"],
             "대출성": ["대출성", "대출", "신용대출", "담보"],
         }
