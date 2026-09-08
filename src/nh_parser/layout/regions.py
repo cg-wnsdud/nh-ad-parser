@@ -45,6 +45,16 @@ _LABEL_TO_ROLE = {
     "algorithm": "기타",
     "footer": "고지문구",
     "header": "고지문구",
+    # 농협 ETL with LLM(DLA) `paragraphs[].type` 중 위 PaddleX 라벨과 겹치지 않는 것.
+    # Title/Text/Table/Figure 는 문자열이 같아 위 항목에 그대로 걸린다.
+    # 근거: docs/농협-ocr-연동-규격.md §6 (타입 9종)
+    "list-item": "본문",
+    "equation": "기타",      # PaddleX `formula` 와 같은 취급
+    # 머리말과 꼬리말이 한 클래스(PageHF)로 합쳐져 와서 구분할 수 없다. PaddleX 는
+    # header/footer 를 갈라 줬는데 둘 다 고지문구였으므로 역할 자체는 안 갈린다.
+    "pagehf": "고지문구",
+    "index": "본문",
+    "unknown": "본문",       # `.get` 기본값과 같지만 새 provider 의 라벨 집합을 명시한다
 }
 
 _NOTICE_HEADER = re.compile(r"유의\s*사항|알아\s*두|꼭\s*확인|주의\s*사항")
