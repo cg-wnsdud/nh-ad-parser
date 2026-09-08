@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>nh-ad-parser P3 검수 뷰어</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --border: #d9dce1;
+    --text: #1c1f24;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --ok: #16a34a;
+    --warn: #d97706;
+    --bad: #dc2626;
+    --mono: "Consolas", "SFMono-Regular", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", "Malgun Gothic", sans-serif; font-size: 14px; }
+  header.top { background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 10px 16px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  header.top h1 { font-size: 15px; margin: 0; color: var(--muted); font-weight: 600; }
+  .doc-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .doc-tab { padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: #eef0f3; cursor: pointer; font-size: 13px; }
+  .doc-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .doc-info { background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 10px 16px; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px;
+    border-radius: 999px; font-size: 12px; background: #eef0f3; color: var(--text);
+    border: 1px solid var(--border); white-space: nowrap; }
+  .badge.status-confirmed, .badge.ok { background: #e9f9ee; color: var(--ok); border-color: #bfe8cd; }
+  .badge.status-needs_review, .badge.warn { background: #fff6e6; color: var(--warn); border-color: #f4dba0; }
+  .badge.status-unresolved, .badge.bad { background: #fdecec; color: var(--bad); border-color: #f5c2c2; }
+  .doc-source { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+
+  .page-tabs { padding: 6px 16px 0; display: flex; gap: 6px; }
+  .page-tab { padding: 4px 10px; border: 1px solid var(--border); border-bottom: none;
+    border-radius: 6px 6px 0 0; background: #eef0f3; cursor: pointer; font-size: 12px; }
+  .page-tab.active { background: var(--panel); font-weight: 600; }
+
+  main { display: flex; gap: 12px; padding: 12px 16px; align-items: flex-start; }
+  .image-col { flex: 0 0 auto; max-width: 60%; }
+  .image-scroll { border: 1px solid var(--border); background: #fff; max-height: 88vh;
+    overflow: auto; border-radius: 6px; }
+  .page-image-wrap { position: relative; display: inline-block; line-height: 0; }
+  .page-image-wrap img { display: block; width: 900px; max-width: none; }
+  .region-hit { position: absolute; border: 1px solid rgba(37,99,235,0); background: rgba(37,99,235,0);
+    cursor: pointer; transition: background 0.1s, border-color 0.1s; }
+  .region-hit:hover { background: rgba(37,99,235,0.18); border-color: rgba(37,99,235,0.6); }
+  .region-hit.needs-review:hover { background: rgba(220,38,38,0.18); border-color: rgba(220,38,38,0.6); }
+  .region-hit.unlabelled:hover { background: rgba(217,119,6,0.18); border-color: rgba(217,119,6,0.6); }
+  .region-hit.empty-region:hover { background: rgba(107,114,128,0.18); border-color: rgba(107,114,128,0.6); }
+  .region-hit.selected { background: rgba(37,99,235,0.28) !important; border: 2px solid var(--accent) !important; }
+
+  .side-col { flex: 1 1 auto; min-width: 360px; display: flex; flex-direction: column; gap: 10px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+    margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .filters { padding: 8px 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 12px; }
+  .filters input[type="text"] { flex: 1; min-width: 120px; padding: 4px 8px; border: 1px solid var(--border);
+    border-radius: 4px; font-size: 12px; }
+
+  .region-list { max-height: 32vh; overflow: auto; }
+  .region-row { padding: 7px 12px; border-bottom: 1px solid #eef0f3; cursor: pointer; font-size: 12.5px; }
+  .region-row:hover { background: #f7f9fc; }
+  .region-row.selected { background: #eaf1ff; }
+  .region-row .rid { font-family: var(--mono); color: var(--muted); }
+  .region-row .rtext { margin-top: 2px; color: var(--text); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+
+  .detail { padding: 10px 12px; max-height: 46vh; overflow: auto; font-size: 12.5px; }
+  .detail .row { margin-bottom: 8px; }
+  .detail .label { color: var(--muted); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.03em; margin-bottom: 2px; }
+  .detail pre { white-space: pre-wrap; word-break: break-word; background: #f7f9fc; border: 1px solid #eef0f3;
+    border-radius: 4px; padding: 6px 8px; margin: 0; font-family: inherit; }
+  .detail .diff-line { display: flex; gap: 6px; margin-bottom: 4px; }
+  .detail .diff-line .tag { flex: 0 0 46px; font-size: 10px; color: var(--muted); }
+  .label-chip { display: inline-block; background: #eef0f3; border: 1px solid var(--border); border-radius: 4px;
+    padding: 1px 6px; font-size: 11px; margin: 2px 4px 0 0; }
+  .empty-hint { padding: 10px 12px; color: var(--muted); font-size: 12px; }
+  .stray-list { padding: 6px 12px; font-size: 12px; max-height: 20vh; overflow: auto; }
+  .stray-list .item { padding: 4px 0; border-bottom: 1px dashed #eef0f3; }
+  .legend { padding: 8px 12px; font-size: 11px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; }
+  .legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px;
+    vertical-align: -1px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>nh-ad-parser P3(review-input) 검수 뷰어</h1>
+  <div class="doc-tabs" id="doc-tabs"></div>
+</header>
+<div class="doc-info" id="doc-info"></div>
+<div class="page-tabs" id="page-tabs"></div>
+<main>
+  <div class="image-col">
+    <div class="image-scroll"><div class="page-image-wrap" id="image-wrap"></div></div>
+    <div class="legend">
+      <span><span class="swatch" style="background:#be0082"></span>영역 박스(원본에 미리 그려짐)</span>
+      <span><span class="swatch" style="background:#ff69d7"></span>줄 박스(원본에 미리 그려짐)</span>
+      <span><span class="swatch" style="background:rgba(37,99,235,.4)"></span>hover/선택</span>
+      <span><span class="swatch" style="background:rgba(220,38,38,.4)"></span>검수 필요 영역</span>
+      <span><span class="swatch" style="background:rgba(217,119,6,.4)"></span>구분값 미배정 영역</span>
+      <span><span class="swatch" style="background:rgba(107,114,128,.4)"></span>빈 영역(텍스트 없음)</span>
+    </div>
+  </div>
+  <div class="side-col">
+    <div class="panel">
+      <h2>영역 목록</h2>
+      <div class="filters">
+        <label><input type="checkbox" id="f-review"/> 검수 필요만</label>
+        <label><input type="checkbox" id="f-unlabelled"/> 구분값 없음만</label>
+        <input type="text" id="f-text" placeholder="텍스트 검색..." />
+      </div>
+      <div class="region-list" id="region-list"></div>
+    </div>
+    <div class="panel">
+      <h2>선택 영역 상세</h2>
+      <div id="detail" class="detail"><div class="empty-hint">영역을 클릭하면 상세 정보가 여기 표시됩니다.</div></div>
+    </div>
+    <div class="panel">
+      <h2>미배정 줄 / 회수 후보 (0이어야 정상)</h2>
+      <div id="stray" class="stray-list"></div>
+    </div>
+    <div class="panel">
+      <h2>구분값 인덱스 (템플릿 라벨 → 영역)</h2>
+      <div id="label-index" class="stray-list" style="max-height:26vh;"></div>
+    </div>
+  </div>
+</main>
+<script id="review-data" type="application/json">__REVIEW_DATA__</script>
+<script>
+(function () {
+  var DOCS = JSON.parse(document.getElementById('review-data').textContent);
+  var state = { docIndex: 0, pageIndex: 0, selected: null };
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    attrs = attrs || {};
+    Object.keys(attrs).forEach(function (key) {
+      if (key === 'class') node.className = attrs[key];
+      else if (key === 'html') node.innerHTML = attrs[key];
+      else if (key === 'text') node.textContent = attrs[key];
+      else node.setAttribute(key, attrs[key]);
+    });
+    (children || []).forEach(function (child) { if (child) node.appendChild(child); });
+    return node;
+  }
+
+  function fmtPct(value) { return (value * 100).toFixed(3) + '%'; }
+
+  function statusBadgeClass(status) {
+    if (status === 'confirmed') return 'status-confirmed';
+    if (status === 'needs_review') return 'status-needs_review';
+    return 'status-unresolved';
+  }
+
+  function renderDocTabs() {
+    var wrap = document.getElementById('doc-tabs');
+    wrap.innerHTML = '';
+    DOCS.forEach(function (doc, index) {
+      var tab = el('div', { class: 'doc-tab' + (index === state.docIndex ? ' active' : ''),
+        text: doc.source_file || doc.doc_id });
+      tab.addEventListener('click', function () {
+        state.docIndex = index; state.pageIndex = 0; state.selected = null; renderAll();
+      });
+      wrap.appendChild(tab);
+    });
+  }
+
+  function renderDocInfo() {
+    var doc = DOCS[state.docIndex];
+    var cls = doc.classification || {};
+    var tpl = doc.template || {};
+    var sum = doc.summary || {};
+    var wrap = document.getElementById('doc-info');
+    wrap.innerHTML = '';
+    wrap.appendChild(el('span', { class: 'doc-source', text: doc.doc_id }));
+    wrap.appendChild(el('span', { class: 'badge', text: '상품군 ' + (cls.product_group || '?') }));
+    wrap.appendChild(el('span', { class: 'badge', text: '유형 ' + (cls.ad_type || '?') }));
+    wrap.appendChild(el('span', { class: 'badge', text: '상품명 ' + (cls.product_name_shown || '?') }));
+    wrap.appendChild(el('span', {
+      class: 'badge ' + statusBadgeClass(tpl.status),
+      text: '템플릿 ' + (tpl.template_id || '판단불가') + ' (' + (tpl.status || '?') + ')',
+    }));
+    wrap.appendChild(el('span', { class: 'badge', text: '영역 ' + (sum.region_count ?? '?') +
+      (sum.empty_region_count ? ' (+빈 ' + sum.empty_region_count + ')' : '') }));
+    wrap.appendChild(el('span', { class: 'badge', text: '원문줄 ' + (sum.parser_primary_line_total ?? '?') }));
+    wrap.appendChild(el('span', {
+      class: 'badge ' + (sum.unlabelled_region_count ? 'warn' : 'ok'),
+      text: '라벨됨 ' + (sum.labelled_region_count ?? 0) + ' / 안됨 ' + (sum.unlabelled_region_count ?? 0),
+    }));
+    wrap.appendChild(el('span', {
+      class: 'badge ' + (sum.needs_review_region_count ? 'warn' : 'ok'),
+      text: '검수필요 ' + (sum.needs_review_region_count ?? 0),
+    }));
+    wrap.appendChild(el('span', {
+      class: 'badge ' + (sum.unassigned_line_count ? 'bad' : 'ok'),
+      text: '미배정줄 ' + (sum.unassigned_line_count ?? 0),
+    }));
+    if (tpl.reason) {
+      wrap.appendChild(el('span', { class: 'badge', text: '근거: ' + tpl.reason }));
+    }
+  }
+
+  function renderPageTabs() {
+    var doc = DOCS[state.docIndex];
+    var wrap = document.getElementById('page-tabs');
+    wrap.innerHTML = '';
+    if ((doc.pages || []).length <= 1) return;
+    doc.pages.forEach(function (page, index) {
+      var tab = el('div', { class: 'page-tab' + (index === state.pageIndex ? ' active' : ''),
+        text: '쪽 ' + page.page_no + (page.parse_status !== 'ok' ? ' (' + page.parse_status + ')' : '') });
+      tab.addEventListener('click', function () { state.pageIndex = index; state.selected = null; renderPage(); });
+      wrap.appendChild(tab);
+    });
+  }
+
+  function regionClasses(region) {
+    var classes = ['region-hit'];
+    if (region.empty) classes.push('empty-region');
+    else if (region.needs_review) classes.push('needs-review');
+    else if (!(region.labels || []).length) classes.push('unlabelled');
+    return classes.join(' ');
+  }
+
+  function renderPage() {
+    var doc = DOCS[state.docIndex];
+    var page = doc.pages[state.pageIndex];
+    var wrap = document.getElementById('image-wrap');
+    wrap.innerHTML = '';
+    if (!page.image) {
+      wrap.appendChild(el('div', { class: 'empty-hint',
+        text: '미리보기 이미지 없음: ' + (page.image_missing || '') }));
+    } else {
+      var img = el('img', { src: page.image, alt: 'page ' + page.page_no });
+      wrap.appendChild(img);
+      (page.regions || []).forEach(function (region, rIndex) {
+        if (!region.bbox) return;
+        var b = region.bbox;
+        var hit = el('div', { class: regionClasses(region), 'data-index': rIndex,
+          title: region.region_id + ' / ' + (region.layout_label || '') });
+        hit.style.left = fmtPct(b[0] / page.canvas_w);
+        hit.style.top = fmtPct(b[1] / page.canvas_h);
+        hit.style.width = fmtPct((b[2] - b[0]) / page.canvas_w);
+        hit.style.height = fmtPct((b[3] - b[1]) / page.canvas_h);
+        hit.addEventListener('click', function () { selectRegion(rIndex, true); });
+        wrap.appendChild(hit);
+      });
+    }
+    renderRegionList();
+    renderStray();
+    renderDetail(null);
+  }
+
+  function currentRegions() {
+    var doc = DOCS[state.docIndex];
+    var page = doc.pages[state.pageIndex];
+    return page.regions || [];
+  }
+
+  function passesFilters(region) {
+    var reviewOnly = document.getElementById('f-review').checked;
+    var unlabelledOnly = document.getElementById('f-unlabelled').checked;
+    var text = document.getElementById('f-text').value.trim().toLowerCase();
+    if (reviewOnly && !region.needs_review) return false;
+    if (unlabelledOnly && ((region.labels || []).length || region.empty)) return false;
+    if (text) {
+      var haystack = (region.selected_text || '') + ' ' + (region.region_id || '');
+      if (haystack.toLowerCase().indexOf(text) === -1) return false;
+    }
+    return true;
+  }
+
+  function renderRegionList() {
+    var list = document.getElementById('region-list');
+    list.innerHTML = '';
+    currentRegions().forEach(function (region, index) {
+      if (!passesFilters(region)) return;
+      var badges = [];
+      if (region.empty) badges.push('빈영역');
+      if (region.needs_review) badges.push('⚠검수');
+      if (!region.empty && !(region.labels || []).length) badges.push('미라벨');
+      var labelNames = (region.labels || []).map(function (l) { return l.label; }).join(', ');
+      var row = el('div', { class: 'region-row' + (state.selected === index ? ' selected' : ''),
+        'data-index': index }, [
+        el('div', { class: 'rid', text: region.region_id + '  ' + (region.layout_label || '') +
+          (labelNames ? '  →' + labelNames : '') +
+          (badges.length ? '  [' + badges.join(' ') + ']' : '') }),
+        el('div', { class: 'rtext', text: region.selected_text || '(빈 텍스트)' }),
+      ]);
+      row.addEventListener('click', function () { selectRegion(index, true); });
+      list.appendChild(row);
+    });
+  }
+
+  function renderStray() {
+    var doc = DOCS[state.docIndex];
+    var page = doc.pages[state.pageIndex];
+    var wrap = document.getElementById('stray');
+    wrap.innerHTML = '';
+    var unassigned = page.unassigned_lines || [];
+    var recovery = page.recovery_candidates || [];
+    if (!unassigned.length && !recovery.length) {
+      wrap.appendChild(el('div', { class: 'item', text: '없음 — 정상' }));
+      return;
+    }
+    unassigned.forEach(function (line) {
+      wrap.appendChild(el('div', { class: 'item', text: '[미배정] ' + line.line_ref + ': ' + line.text }));
+    });
+    recovery.forEach(function (candidate) {
+      wrap.appendChild(el('div', { class: 'item', text: '[회수후보/미검증] ' + candidate.text }));
+    });
+  }
+
+  function renderDetail(index) {
+    var wrap = document.getElementById('detail');
+    wrap.innerHTML = '';
+    if (index === null || index === undefined) {
+      wrap.appendChild(el('div', { class: 'empty-hint', text: '영역을 클릭하면 상세 정보가 여기 표시됩니다.' }));
+      return;
+    }
+    var region = currentRegions()[index];
+    if (!region) return;
+
+    wrap.appendChild(el('div', { class: 'row' }, [
+      el('div', { class: 'label', text: 'region_id / layout' }),
+      el('div', { text: region.region_id + '  ·  ' + (region.layout_label || '?') +
+        (region.layout_score != null ? ' (score ' + region.layout_score.toFixed(2) + ')' : '') +
+        (region.card_no != null ? '  ·  card_no=' + region.card_no : '') }),
+    ]));
+
+    wrap.appendChild(el('div', { class: 'row' }, [
+      el('div', { class: 'label', text: 'bbox' }), el('div', { text: JSON.stringify(region.bbox) }),
+    ]));
+
+    if (region.empty) {
+      wrap.appendChild(el('div', { class: 'row' }, [
+        el('div', { class: 'label', text: '상태' }),
+        el('div', { text: '텍스트 없는 영역 — 다음 단계로 넘어가는 selected_text가 없습니다.' }),
+      ]));
+      return;
+    }
+
+    wrap.appendChild(el('div', { class: 'row' }, [
+      el('div', { class: 'label', text: '다음 심의 단계로 전달되는 selected_text (P3)' }),
+      el('pre', { text: region.selected_text || '(빈 텍스트)' }),
+      el('div', { style: 'margin-top:4px;color:var(--muted);font-size:11px;',
+        text: 'source=' + region.selected_source + '  status=' + region.selection_status +
+          '  needs_review=' + region.needs_review +
+          (region.confidence != null ? '  confidence=' + region.confidence : '') }),
+      region.reason ? el('div', { style: 'margin-top:2px;color:var(--muted);font-size:11px;',
+        text: '근거: ' + region.reason }) : null,
+    ]));
+
+    wrap.appendChild(el('div', { class: 'row' }, [
+      el('div', { class: 'label', text: 'line_refs (' + (region.line_refs || []).length + ', P1 원문 위치 참조)' }),
+      el('div', { style: 'font-family:var(--mono);font-size:11px;color:var(--muted);word-break:break-all;',
+        text: (region.line_refs || []).join(', ') || '-' }),
+    ]));
+
+    if ((region.labels || []).length) {
+      var labelWrap = el('div', { class: 'row' }, [el('div', { class: 'label', text: '템플릿 구분값 (라벨링)' })]);
+      region.labels.forEach(function (label) {
+        var chip = el('div', { style: 'margin-bottom:6px;' });
+        chip.appendChild(el('span', { class: 'label-chip', text: label.label }));
+        (label.spans || []).forEach(function (span) {
+          chip.appendChild(el('div', { style: 'font-size:11px;color:var(--muted);margin-left:4px;',
+            text: 'L' + span.line_from + '-' + span.line_to + '  ' + (span.sources || []).join(',') +
+              (span.confidence != null ? '  conf=' + span.confidence : '') +
+              (span.reasons && span.reasons.length ? '  — ' + span.reasons.join('; ') : '') }));
+        });
+        labelWrap.appendChild(chip);
+      });
+      wrap.appendChild(labelWrap);
+    } else {
+      wrap.appendChild(el('div', { class: 'row' }, [
+        el('div', { class: 'label', text: '템플릿 구분값' }),
+        el('div', { style: 'color:var(--warn);', text: '이 영역에 배정된 구분값 없음' }),
+      ]));
+    }
+  }
+
+  function renderLabelIndex() {
+    var doc = DOCS[state.docIndex];
+    var wrap = document.getElementById('label-index');
+    wrap.innerHTML = '';
+    var index = doc.label_index || [];
+    if (!index.length) {
+      wrap.appendChild(el('div', { class: 'item', text: '구분값 판정 없음' }));
+      return;
+    }
+    index.forEach(function (entry) {
+      var required = ((entry.template_item || {}).entries || [])[0];
+      var head = el('div', { class: 'item' });
+      head.appendChild(el('div', { style: 'font-weight:600;',
+        text: entry.label + (required && required.required ? '  (필수여부=' + required.required + ')' : '') +
+          '  — 참조 ' + (entry.references || []).length + '건' }));
+      (entry.references || []).forEach(function (ref) {
+        var link = el('span', { class: 'label-chip', style: 'cursor:pointer;',
+          text: 'p' + ref.page_no + '/' + ref.region_id });
+        link.addEventListener('click', function () { goToRegion(ref.page_no, ref.region_id); });
+        head.appendChild(link);
+      });
+      wrap.appendChild(head);
+    });
+  }
+
+  function goToRegion(pageNo, regionId) {
+    var doc = DOCS[state.docIndex];
+    var pageIndex = doc.pages.findIndex(function (p) { return p.page_no === pageNo; });
+    if (pageIndex === -1) return;
+    if (pageIndex !== state.pageIndex) { state.pageIndex = pageIndex; renderPageTabs(); renderPage(); }
+    var regionIndex = doc.pages[pageIndex].regions.findIndex(function (r) { return r.region_id === regionId; });
+    if (regionIndex !== -1) selectRegion(regionIndex, true);
+  }
+
+  function selectRegion(index, scrollIntoView) {
+    state.selected = index;
+    document.querySelectorAll('.region-hit').forEach(function (node) {
+      node.classList.toggle('selected', Number(node.getAttribute('data-index')) === index);
+    });
+    document.querySelectorAll('.region-row').forEach(function (node) {
+      node.classList.toggle('selected', Number(node.getAttribute('data-index')) === index);
+    });
+    if (scrollIntoView) {
+      var hit = document.querySelector('.region-hit[data-index="' + index + '"]');
+      if (hit) hit.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+      var row = document.querySelector('.region-row[data-index="' + index + '"]');
+      if (row) row.scrollIntoView({ block: 'nearest' });
+    }
+    renderDetail(index);
+  }
+
+  ['f-review', 'f-unlabelled'].forEach(function (id) {
+    document.getElementById(id).addEventListener('change', renderRegionList);
+  });
+  document.getElementById('f-text').addEventListener('input', renderRegionList);
+
+  function renderAll() {
+    renderDocTabs();
+    renderDocInfo();
+    renderPageTabs();
+    renderPage();
+    renderLabelIndex();
+  }
+
+  renderAll();
+})();
+</script>
+</body>
+</html>
