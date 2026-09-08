@@ -112,6 +112,7 @@ class Settings:
     # 통짜 1블록이 된 원인. "small" 로 카드별 하위 블록 유지 (3→20블록 실측).
     # A/B 실험에서 코드 자체를 바꾸지 않고 large/small을 갈라 실행할 수 있게 한다.
     # 기본값은 기존 카드 콜라주 회귀를 막은 small을 유지한다.
+    # "server" 를 주면 요청에서 이 항목을 빼 서버 기본값을 그대로 쓴다 (대조용).
     paddlex_layout_merge_bboxes_mode: str = os.environ.get(
         "PADDLEX_LAYOUT_MERGE_BBOXES_MODE", "small"
     ).strip().lower()

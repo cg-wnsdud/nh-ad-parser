@@ -25,7 +25,10 @@ dependencies = [
 # PDF·이미지 트랙은 정상 동작한다. 설치법은 README 의 "HWP 입력" 절 참고.
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "pyyaml>=6.0.3",
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true

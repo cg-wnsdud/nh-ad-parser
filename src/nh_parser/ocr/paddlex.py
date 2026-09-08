@@ -246,10 +246,14 @@ def request_layout_parsing(image: Image.Image) -> PaddleXPageResult:
         # 공식 predict 파라미터의 camelCase 전달 (실서버 동작 검증: 2026-07-17)
         "textDetLimitSideLen": SETTINGS.paddlex_text_det_limit_side_len,
         "textDetLimitType": SETTINGS.paddlex_text_det_limit_type,
-        "layoutMergeBboxesMode": SETTINGS.paddlex_layout_merge_bboxes_mode,
         "useFormulaRecognition": SETTINGS.paddlex_use_formula_recognition,
         "useTextlineOrientation": SETTINGS.paddlex_use_textline_orientation,
     }
+    # "server" 는 이 키를 **아예 안 보낸다**는 뜻이다. 그래야 서버 PP-StructureV3.yml
+    # 의 값이 그대로 적용된다 — 우리 값과 서버 기본값을 대조할 때만 쓴다. 서버 설정을
+    # 바꾸는 것이 아니라 우리 요청에서 이 항목을 비우는 것뿐이다.
+    if SETTINGS.paddlex_layout_merge_bboxes_mode not in ("", "server"):
+        payload["layoutMergeBboxesMode"] = SETTINGS.paddlex_layout_merge_bboxes_mode
     resp = requests.post(SETTINGS.paddlex_url, json=payload, timeout=SETTINGS.paddlex_timeout_s)
     resp.raise_for_status()
     body = resp.json()
