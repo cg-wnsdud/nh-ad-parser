@@ -3,9 +3,9 @@
 규격은 [docs/농협-ocr-연동-규격.md](../../../docs/농협-ocr-연동-규격.md),
 전환 배경과 격차는 [docs/농협-ocr-전환-계획.md](../../../docs/농협-ocr-전환-계획.md).
 
-**이 모듈은 변환만 한다.** HTTP 클라이언트(로그인·업로드·폴링·결과 조회)는 농협
-접속 정보와 인증 필수 여부를 받은 뒤 따로 붙인다 — 지금 짜면 추측으로 채우는 부분이
-생긴다(전환 계획 §6-1).
+**이 모듈은 변환만 한다.** 공개 API 호출 프로토타입은
+``integrations/etlwithllm/client.py``에 분리되어 있다. 로그인·워크스페이스 생성은 농협
+준비 범위라 구현하지 않고, 이미 인증된 세션과 전달받은 ``ws_id``를 주입한다.
 
 `paddlex.py` 와 같은 `PaddleXPageResult` 를 낸다. 이름이 PaddleX 지만 하류(영역 조립·
 템플릿·검수)가 이미 그 모양을 소비하고 있어서, provider 를 바꿀 때 하류를 건드리지
@@ -19,6 +19,10 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from typing import Any
+
 from ..ir import Line
 from .paddlex import LayoutBlock, PaddleXPageResult, _norm_bbox
 
@@ -30,6 +34,90 @@ DLA_TYPES = (
     "Title", "List-item", "Equation", "Figure", "Table",
     "PageHF", "Index", "Text", "Unknown",
 )
+
+
+class EtlDefaultJsonError(ValueError):
+    """ETL 응답에서 가이드의 Default JSON 본문을 찾지 못했을 때 발생한다."""
+
+
+def normalize_default_document(payload: Any) -> dict:
+    """실제 응답 변형을 가이드의 Default JSON 한 형태로 정규화한다.
+
+    부록 p.57은 ``doc_result`` 바로 아래에 ``pdfName/pageLen/pages``가 있다고
+    설명하지만, 앞쪽 callback 예시는 ``doc_result.default`` 한 단계를 더 둔다.
+    결과 조회 API도 플랫폼 공통 ``data`` envelope를 씌울 수 있어 세 형태를 모두
+    수용한다. 모르는 키를 재귀적으로 뒤지지는 않는다. 계약 오타가 생겼을 때 우연히
+    다른 ``pages``를 집어 드는 것보다 명시적으로 실패하는 편이 안전하다.
+    """
+    if not isinstance(payload, dict):
+        raise EtlDefaultJsonError("ETL 결과는 JSON object여야 합니다")
+
+    candidates: list[tuple[str, Any]] = [("root", payload)]
+    seen: set[int] = set()
+    while candidates:
+        location, value = candidates.pop(0)
+        if not isinstance(value, dict) or id(value) in seen:
+            continue
+        seen.add(id(value))
+        if isinstance(value.get("pages"), list) and (
+            "pdfName" in value or "pageLen" in value
+        ):
+            return value
+        for key in ("data", "doc_result", "default"):
+            child = value.get(key)
+            if isinstance(child, dict):
+                candidates.append((f"{location}.{key}", child))
+
+    raise EtlDefaultJsonError(
+        "Default JSON을 찾지 못했습니다. 기대 경로: root, data, "
+        "doc_result, doc_result.default"
+    )
+
+
+def load_default_document(path: Path, *, source_name: str | None = None) -> dict:
+    """``dla_result_path``가 파일/디렉터리 어느 쪽이어도 Default JSON을 찾는다.
+
+    ``transform()``의 인자 이름만 문서에 있고 실제 경로 형태는 공개되지 않았다.
+    파일이면 바로 읽고, 디렉터리면 결과형 접미사(``_pages`` 등)를 제외한 JSON을
+    검사한다. 여러 후보가 있으면 ``pdfName``이 원본 파일명과 일치하는 것을 고른다.
+    그래도 하나로 정해지지 않으면 조용히 임의 선택하지 않는다.
+    """
+    target = Path(path)
+    if target.is_file():
+        try:
+            return normalize_default_document(json.loads(target.read_text(encoding="utf-8")))
+        except json.JSONDecodeError as exc:
+            raise EtlDefaultJsonError(f"JSON 파싱 실패: {target}: {exc}") from exc
+    if not target.is_dir():
+        raise EtlDefaultJsonError(f"DLA 결과 경로가 존재하지 않습니다: {target}")
+
+    excluded = ("_pages.json", "_page_grouped.json", "_chunk_data.json", "_edit.json")
+    matches: list[tuple[Path, dict]] = []
+    failures: list[str] = []
+    for candidate in sorted(target.glob("*.json")):
+        if candidate.name.endswith(excluded):
+            continue
+        try:
+            doc = normalize_default_document(json.loads(candidate.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError, EtlDefaultJsonError) as exc:
+            failures.append(f"{candidate.name}: {exc}")
+            continue
+        matches.append((candidate, doc))
+
+    if source_name:
+        exact = [item for item in matches if str(item[1].get("pdfName") or "") == source_name]
+        if len(exact) == 1:
+            return exact[0][1]
+        if len(exact) > 1:
+            names = ", ".join(p.name for p, _ in exact)
+            raise EtlDefaultJsonError(f"원본과 일치하는 Default JSON이 여러 개입니다: {names}")
+    if len(matches) == 1:
+        return matches[0][1]
+    if not matches:
+        detail = f" ({'; '.join(failures)})" if failures else ""
+        raise EtlDefaultJsonError(f"Default JSON 후보가 없습니다: {target}{detail}")
+    names = ", ".join(p.name for p, _ in matches)
+    raise EtlDefaultJsonError(f"Default JSON 후보가 여러 개입니다: {names}")
 
 # 줄이 오지 않는 클래스. 규격상 `lines` 는 "table·image·equation 외 클래스" 에만 온다.
 # 표의 정본 줄이 없어지는 문제(전환 계획 G11)가 여기서 비롯한다.

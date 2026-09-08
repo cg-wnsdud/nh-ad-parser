@@ -200,7 +200,7 @@ curl 예시(원문 p.31)에서는 `res_type` 을 리스트로 준다 — `"res_t
 
 | 설정 | 항목명 | 선택 값 | 기본값 |
 |---|---|---|---|
-| 추출 모드 | `extract_type` | `all`(dla+직접파싱) / `dla` / `parser`(hwpx·docx 직접파싱) | `dla` |
+| 추출 모드 | `extractType` | `all`(dla+직접파싱) / `dla` / `parser`(hwpx·docx 직접파싱) | `dla` |
 | 테이블 구조 | `table_to_struct` | `html` / `md` | `html` |
 | 테이블 인식 모델 | `tsr_model_name` | `tsr-vis` / `trs-sem` | `tsr-vis` |
 | 정렬 방식 | `n_columns` | `1`(단순) / `-1`(알고리즘) | `-1` |

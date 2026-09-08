@@ -49,7 +49,8 @@ PaddleX·Gemma 는 사내 서버에 있고 **WireGuard VPN 이 연결돼 있어�
 > | [docs/농협-ocr-연동-규격.md](docs/농협-ocr-연동-규격.md) | 받은 API 가이드 58쪽 정리 (모순·공백 포함) |
 > | [docs/농협-ocr-전환-계획.md](docs/농협-ocr-전환-계획.md) | 격차 11건 · 전환 설계 · 회신 질문 |
 > | [docs/농협-ocr-현장점검.md](docs/농협-ocr-현장점검.md) | 현장 절차·반입물·시험 항목 T1~T11 |
-> | `ocr/etlwithllm.py` | Default JSON → IR 변환기 (HTTP 호출부는 접속 정보 확보 후) |
+> | `ocr/etlwithllm.py` | Default JSON → IR 변환기 |
+> | [integrations/etlwithllm-review/README.md](integrations/etlwithllm-review/README.md) | 외부 API / transform / CUSTOMIZE 후보와 KL Custom Parser 비교 |
 > | `tools/etl_probe.py` | 현장 반입용 프로브. **의존성 0, 단일 파일** |
 > | `tools/etl_mock.py` | 방문 전 리허설용 목 서버 |
 >

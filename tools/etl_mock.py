@@ -20,6 +20,11 @@ run 디렉터리가 갈려 login 토큰이 유실되던 문제).
 import json, subprocess, sys, threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 FP = "test1.pdf/v1/test1.pdf"
 RP = "test1.pdf/v1/test1.json"
 POLLS = {"n": 0}

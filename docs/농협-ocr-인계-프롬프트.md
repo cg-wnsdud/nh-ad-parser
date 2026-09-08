@@ -66,7 +66,7 @@ ETL with LLM           =  DLA           +  STR               +  TSR / CD
 
 [바뀐 뒤]
 파일 → ETL 업로드 → 폴링 → 결과 JSON        ← 렌더 · 페이지분리 · OCR 을 플랫폼이 내부에서 한다
-     → 변환기 (JSON → 우리 데이터 구조)      ← ★ 새로 만드는 유일한 코드
+     → 연결 어댑터 + 변환기 (JSON → 우리 데이터 구조)
      → 영역 조립 → 템플릿 선택 · 구분 라벨 → P1/P3 출력 → 다음 심의 단계   ← 손대지 않는다
 ```
 
@@ -183,7 +183,7 @@ PaddleX 가 세로로 긴 캔버스를 축소해서 작은 글씨(유의사항·
 
 | 항목명 | 선택 값 | 기본값 |
 |---|---|---|
-| `extract_type` | `all` / `dla` / `parser`(hwpx·docx 직접파싱) | `dla` |
+| `extractType` | `all` / `dla` / `parser`(hwpx·docx 직접파싱) | `dla` |
 | `table_to_struct` | `html` / `md` | `html` |
 | `tsr_model_name` | `tsr-vis` / `trs-sem` | `tsr-vis` |
 | `n_columns` | `1`(단순) / `-1`(알고리즘) | `-1` |
@@ -247,6 +247,8 @@ pages     LIST
 | 파일 | 내용 | 상태 |
 |---|---|---|
 | `src/nh_parser/ocr/etlwithllm.py` | 결과 JSON → 우리 데이터 구조 변환기 + 좌표 스케일 변환 | 완료 |
+| `src/nh_parser/integrations/etlwithllm/` | 외부 API·DLA 결과 결합·P1/P3 생성 공통 코드 | 팀장 검토용 프로토타입 |
+| `integrations/etlwithllm-review/` | 외부 API / transform / CUSTOMIZE 후보와 KL 비교 README | 팀장 검토용 |
 | `tests/test_etl_dla_convert.py` | 위 변환기 테스트 15건 (가이드 예시를 픽스처로) | 통과 |
 | `src/nh_parser/layout/regions.py` | `_LABEL_TO_ROLE` 에 ETL 타입 5종 추가 | 완료 |
 | `tools/etl_probe.py` | 현장 반입용 호출 스크립트. **표준 라이브러리만** (폐쇄망에서 pip 불가) | 완료·리허설 검증 |
@@ -255,9 +257,9 @@ pages     LIST
 | `docs/농협-ocr-전환-계획.md` | 격차 11건 · 전환 설계 · 회신 질문 | 완료 |
 | `docs/농협-ocr-현장점검.md` | 현장 절차 · 반입물 · 시험 항목 T1~T11 | 완료 |
 
-**HTTP 클라이언트(`ocr/etlwithllm.py` 안의 호출부)는 일부러 안 만들었다.** 접속 주소,
-인증 필수 여부, 콜백 가능 여부가 확정되지 않아 지금 만들면 추측이 코드에 박힌다.
-`tools/etl_probe.py` 가 현장 확인용 임시 호출 경로 역할을 한다.
+공개 API 클라이언트는 방향 검토가 가능하도록 프로토타입으로 추가했다. 로그인·워크스페이스
+생성은 구현하지 않고, 농협에서 받은 `ws_id`와 인증된 세션을 주입한다. 실제 폐쇄망 원응답
+확보용 도구는 별도의 `tools/etl_probe.py`다.
 
 ## 8. 확정된 사실
 
@@ -282,7 +284,7 @@ pages     LIST
 
 4. **이미지(PNG/JPG) 업로드 가능 여부.** 가이드 58쪽에 이미지 언급이 **0회**다.
    예시는 전부 PDF 고 샘플 코드는 MIME 을 `application/pdf` 로 고정한다.
-   PDF·HWPX·DOCX 는 근거가 있다(`extract_type: parser` 설명).
+   PDF·HWPX·DOCX 는 근거가 있다(`extractType: parser` 설명).
    **우리 광고물 상당수가 PNG 단건**이라 안 되면 PDF 변환 단계를 넣어야 한다.
 5. 세로로 긴 이미지(실측 1122×6429)를 넣으면 내부에서 축소되는지
 6. 파일 크기·페이지 수 상한, 동시 요청 수, 처리 시간

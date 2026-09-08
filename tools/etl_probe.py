@@ -48,6 +48,13 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+
+# Windows 폐쇄망 PC의 기본 CP949 콘솔에서도 한글·기호 출력 때문에 실행이 멈추지 않게 한다.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 DEFAULT_TIMEOUT_S = 120
 # 폴링 간격. 문서에 권장 주기가 없어 짧게 시작해 늘린다(서버를 두드려 패지 않도록).
 POLL_INTERVALS_S = [2, 2, 3, 3, 5, 5, 5, 10, 10, 10, 15, 15, 20, 20, 30]
