@@ -16,7 +16,8 @@
 | 이미지 보조 판독 | 사내 DGX-Spark에 서빙된 Gemma VLM 호출 |
 | 후처리 | 읽기 순서·영역 조립, 광고 템플릿 선택, 구분값 분류 |
 | 출력 | 원시 파싱 JSON, 판독 근거 P1, 다음 심의 단계 입력 P3 |
-| 농협 KL·ETLwithLLM 연동 | **미구현 — 현장 확인 후 구현 예정** |
+| KL Custom Parser 광고 API | **기존 보고용 프로토타입 구현** — 농협 등록·운영은 미확정 |
+| 농협 ETLwithLLM 연동 | **미구현 — 현장 확인 후 구현 예정** |
 
 현재 코드는 회사 개발망의 모델 주소를 사용한다. 농협 폐쇄망에서는 회사 모델에 접근할
 수 없으므로 다음 두 부분을 농협 내부 서비스로 바꿔야 한다.
@@ -24,8 +25,10 @@
 1. PaddleX OCR·레이아웃 분석 → 농협 ETLwithLLM의 DLA/OCR 결과
 2. Gemma VLM → 농협 내부 vLLM에 서빙된 사용 가능 모델
 
-농협용 HTTP 클라이언트, FastAPI 서버, 컨테이너·마운트 설정은 아직 확정된 계약이 아니므로
-이 저장소에 포함하지 않았다. 결정이 필요한 항목은
+제공받은 Custom Parser API 예제의 비동기 통신 방식은 광고용 FastAPI 프로토타입으로
+구현해 두었다. 다만 농협용 ETL HTTP 클라이언트, 컨테이너·마운트 설정은 아직 확정된
+계약이 아니므로 포함하지 않았다. 기존 구현의 범위는
+[KL Custom Parser 기존 구현](docs/kl-parser-기존-구현.md), 결정이 필요한 항목은
 [농협 연동 현장 확인 질문](docs/농협-연동-현장-질문.md)에 정리했다.
 
 ## 전체 파이프라인
@@ -128,40 +131,77 @@ OCR 문구를 제목·본문·표·고지문구 등의 영역에 배정한다. �
 }
 ```
 
-## 농협 KL 연동 계획
+## 기존 KL Custom Parser 준비 내용
+
+기존에는 제공받은 Custom Parser API 예제의 비동기 호출 방식을 광고 파싱에 적용했다.
+현재 저장소에서는 `src/nh_parser/kl_api/`가 당시 보고한 `kl_parser` 역할을 하고,
+나머지 `nh_parser` 패키지가 당시 `nh_parsing` 역할을 한다.
+
+```text
+호출 측(KL로 가정했으나 등록 가능 여부는 미확인)
+  │ POST /ad/parsing: 원본 광고 업로드
+  ▼
+kl_api
+  ├─ 파일 저장
+  ├─ 작업 UUID 발급
+  ├─ genaikl.status 상태 관리
+  └─ 같은 Python 프로세스에서 nh_parser.pipeline.process_file() 호출
+       ├─ HTTP → 회사 DGX-Spark PaddleX
+       ├─ HTTP → 회사 DGX-Spark Gemma
+       └─ 영역 조립·템플릿 선택·구분값 분류
+  │
+  └─ GET /parsing/result/{uuid}
+       └─ kl-core-s2-output.zip 반환
+```
+
+광고용 결과 ZIP에는 다음 파일이 들어간다.
+
+- `*_parsed.json`: 모든 문구·좌표·영역과 템플릿 판독 근거를 보존한 P1
+- `*_review_input.json`: 템플릿 구분값별 문구와 미배정 문구를 정리한 P3
+- `ad_summary.json`: 문서 분류, 적용 템플릿, 페이지·영역·문구 수
+- `*_img.zip`: 좌표 박스를 표시한 페이지 확인 이미지가 있을 때 포함
+
+농협 원본 예제에서 확인되는 기본 진입점은 일반 문서용 `POST /parsing`이다. 광고용
+`POST /ad/parsing`은 기존 프로젝트에서 추가한 엔드포인트이므로 실제 KL에 등록할 수
+있는지는 미팅에서 확인해야 한다. 또한 현재 광고 전용 저장소에는 일반 문서 RAG/HRC
+생성기가 없어 `/parsing`은 `501 Not Implemented`를 반환한다.
+
+## 농협 OCR 전환 시 예상되는 변경
 
 전달받은 두 자료는 서로 다른 인터페이스를 설명한다.
 
-- Knowledge Lake Custom Parser 예제: KL이 별도 파서 API를 호출하고 작업 UUID로 결과를
+- Knowledge Lake Custom Parser 예제: KL이 별도 파서 API를 호출하고 UUID로 결과를
   조회하는 규격
-- ETLwithLLM API 가이드: 파일 분석 요청, 상태·결과 조회 및 `custom_extension` 확장 규격
+- ETLwithLLM API 가이드: 원본 파일 분석 요청, 상태·결과 조회 및 `custom_extension`
+  확장 규격
 
-두 자료만으로는 **KL이 ETLwithLLM을 먼저 실행해 결과를 파서에 전달하는지**, 또는
-**우리 프로그램이 원본 파일을 받아 ETLwithLLM을 호출해야 하는지** 확정할 수 없다.
-따라서 현재 저장소에는 어느 쪽도 구현된 것으로 간주하지 않는다.
-
-현장에서 호출 주체와 입출력 계약이 확인되면 목표 흐름은 다음과 같다.
+두 자료만으로는 KL과 ETLwithLLM 사이의 자동 연결 관계를 확인할 수 없다. 기존
+`kl_api`가 계속 최초 진입점이라고 확인된다면 예상 흐름은 다음과 같다.
 
 ```text
-KL 또는 광고 심의 호출 시스템                 ← 호출 주체 확인 필요
-  │ 원본 광고
-  ▼
-농협 ETLwithLLM DLA/OCR                         ← 연동 위치 확인 필요
-  │ 문구·좌표·영역·표 구조
-  ▼
-ETL 결과 → AdDocument 변환 어댑터              ← 새로 구현할 부분
-  │
-  ├─ 기존 영역 조립·읽기 순서 처리
-  ├─ 농협 내부 vLLM을 이용한 보조 판독
-  └─ 기존 템플릿 선택·구분값 분류
-  ▼
-P1/P3 또는 KL 요구 결과                         ← 최종 출력 계약 확인 필요
+KL
+  → POST /ad/parsing
+  → kl_api가 원본 파일을 농협 ETLwithLLM에 분석 요청
+  → 완료 상태 폴링 및 DLA/OCR 결과 수신
+  → ETL 결과를 AdDocument로 변환
+  → 기존 영역·VLM·템플릿 후처리
+  → GET /parsing/result/{uuid}에서 결과 ZIP 반환
 ```
 
-즉 농협 전환 시에도 템플릿 선택과 광고 파싱 후처리 전체를 버리는 것은 아니다. 현재
-PaddleX가 담당하는 OCR·레이아웃 앞단을 농협 결과로 교체하고, 그 결과를 기존 내부 모델로
-변환하여 후처리 계층을 재사용하는 방향이다. 다만 KL이 요구하는 최종 파일이 기존 Custom
-Parser 예제의 HRC JSON인지 현재 P1/P3인지 먼저 결정되어야 한다.
+이 흐름은 아직 구현하지 않았다. `extract_type` 같은 요청 파라미터만 바꾸면 끝나는 작업도
+아니다. 현재는 **타일 이미지마다 동기식으로 PaddleX를 호출**하지만 ETLwithLLM은
+**원본 파일 한 건을 제출하고 비동기로 결과를 조회**하는 형태이기 때문이다. 다음 작업이
+추가로 필요하다.
+
+1. 원본 파일을 ETL에 제출하고 완료를 기다리는 호출 어댑터
+2. Default JSON의 문구·영역·표·좌표를 `AdDocument`로 변환하는 어댑터
+3. ETL 페이지 좌표와 기존 VLM 크롭 좌표의 정합성 검증
+4. 줄 단위 신뢰도와 표 내부 문구 등 PaddleX 응답과 다른 필드의 처리 정책
+5. 회사 Gemma 대신 농협 내부 vLLM을 사용하는 호환성 확인
+
+반대로 ETLwithLLM의 `custom_extension.transform()`이 공식 연동 지점이라면 KL API와
+별개로 플랫폼 내부 후처리 패키지를 만들어야 한다. 어느 구조가 맞는지는
+[현장 질문지](docs/농협-연동-현장-질문.md)의 답을 받은 뒤 결정한다.
 
 ## 실행 방법
 
@@ -194,6 +234,17 @@ OCR·레이아웃 원본만 빠르게 확인하려면 `--parse-only`를 추가�
 영역별 VLM 판독을 끄려면 `--region-reading off`를 사용한다. 실행 규칙은
 [테스트 실행 지침](docs/테스트-실행-지침.md)을 따른다.
 
+### KL 광고 API 프로토타입 실행
+
+```bash
+uv sync --extra kl-api
+uv run --extra kl-api python tools/run_kl_parser.py --host 127.0.0.1 --port 9101
+```
+
+Swagger UI는 `http://127.0.0.1:9101/docs`, 상태 확인은 `/health`에서 볼 수 있다. 이
+서버를 실행했다고 농협 KL에 자동 등록되는 것은 아니다. URL 등록 또는 소스 패키지
+업로드 중 어떤 방식을 사용할지는 현장에서 확인해야 한다.
+
 ## 폴더 구조
 
 | 경로 | 역할 |
@@ -204,11 +255,13 @@ OCR·레이아웃 원본만 빠르게 확인하려면 `--parse-only`를 추가�
 | `src/nh_parser/vlm/` | Gemma 호출, 캐시, 문구·순서·필드 보조 판독 |
 | `src/nh_parser/review/` | 템플릿 선택, 구분값 분류, P1/P3 생성 |
 | `src/nh_parser/templates/` | 19종 광고 템플릿 카탈로그 |
+| `src/nh_parser/kl_api/` | 기존 KL 비동기 규격을 광고 API에 적용한 프로토타입 |
 | `src/nh_parser/pipeline.py` | 위 단계를 연결하는 파일 단위 진입점 |
 | `tools/parse.py` | 전체 파이프라인 CLI |
+| `tools/run_kl_parser.py` | KL 광고 API 프로토타입 실행기 |
 | `tools/build_review.py` | 저장된 parse JSON에서 P1/P3 재생성 |
 | `tests/` | 외부 모델 없이 검증 가능한 단위·회귀 테스트 |
-| `docs/` | 출력 계약, 실행 지침, 이관 기록, 농협 현장 질문 |
+| `docs/` | 출력 계약, 실행 지침, KL 기존 구현 설명, 농협 현장 질문 |
 
 ## 테스트
 
@@ -236,5 +289,7 @@ uv pip install "document-processor @ git+ssh://git@github.com/CGINSIDE-ROOKIES/d
   실행할 수 없다.
 - 작은 글씨, 특수문자, 표로 검출되지 않은 2열 항목은 현재 모델에서 오류가 발생할 수 있다.
 - VLM 결과는 같은 입력에서도 달라질 수 있어 원문 OCR과 판독 근거를 함께 보존한다.
-- 농협 연동 소스, 컨테이너 이미지, Custom Parser 등록 파일은 현장 질문에 답을 받은 뒤
-  확정한다.
+- KL 프로토타입은 프로세스 내부 백그라운드 작업과 파일 상태를 사용하므로 다중 replica용
+  운영 큐가 아니다.
+- 농협 ETL 연동 소스, 컨테이너 이미지, Custom Parser 등록 파일은 현장 질문에 답을 받은
+  뒤 확정한다.
