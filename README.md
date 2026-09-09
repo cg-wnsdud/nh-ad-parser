@@ -28,8 +28,7 @@
 제공받은 Custom Parser API 예제의 비동기 통신 방식은 광고용 FastAPI 프로토타입으로
 구현해 두었다. 다만 농협용 ETL HTTP 클라이언트, 컨테이너·마운트 설정은 아직 확정된
 계약이 아니므로 포함하지 않았다. 기존 구현의 범위는
-[KL Custom Parser 기존 구현](docs/kl-parser-기존-구현.md), 결정이 필요한 항목은
-[농협 연동 현장 확인 질문](docs/농협-연동-현장-질문.md)에 정리했다.
+[KL Custom Parser 기존 구현](docs/kl-parser-기존-구현.md)에 정리했다.
 
 ## 전체 파이프라인
 
@@ -166,43 +165,6 @@ kl_api
 있는지는 미팅에서 확인해야 한다. 또한 현재 광고 전용 저장소에는 일반 문서 RAG/HRC
 생성기가 없어 `/parsing`은 `501 Not Implemented`를 반환한다.
 
-## 농협 OCR 전환 시 예상되는 변경
-
-전달받은 두 자료는 서로 다른 인터페이스를 설명한다.
-
-- Knowledge Lake Custom Parser 예제: KL이 별도 파서 API를 호출하고 UUID로 결과를
-  조회하는 규격
-- ETLwithLLM API 가이드: 원본 파일 분석 요청, 상태·결과 조회 및 `custom_extension`
-  확장 규격
-
-두 자료만으로는 KL과 ETLwithLLM 사이의 자동 연결 관계를 확인할 수 없다. 기존
-`kl_api`가 계속 최초 진입점이라고 확인된다면 예상 흐름은 다음과 같다.
-
-```text
-KL
-  → POST /ad/parsing
-  → kl_api가 원본 파일을 농협 ETLwithLLM에 분석 요청
-  → 완료 상태 폴링 및 DLA/OCR 결과 수신
-  → ETL 결과를 AdDocument로 변환
-  → 기존 영역·VLM·템플릿 후처리
-  → GET /parsing/result/{uuid}에서 결과 ZIP 반환
-```
-
-이 흐름은 아직 구현하지 않았다. `extract_type` 같은 요청 파라미터만 바꾸면 끝나는 작업도
-아니다. 현재는 **타일 이미지마다 동기식으로 PaddleX를 호출**하지만 ETLwithLLM은
-**원본 파일 한 건을 제출하고 비동기로 결과를 조회**하는 형태이기 때문이다. 다음 작업이
-추가로 필요하다.
-
-1. 원본 파일을 ETL에 제출하고 완료를 기다리는 호출 어댑터
-2. Default JSON의 문구·영역·표·좌표를 `AdDocument`로 변환하는 어댑터
-3. ETL 페이지 좌표와 기존 VLM 크롭 좌표의 정합성 검증
-4. 줄 단위 신뢰도와 표 내부 문구 등 PaddleX 응답과 다른 필드의 처리 정책
-5. 회사 Gemma 대신 농협 내부 vLLM을 사용하는 호환성 확인
-
-반대로 ETLwithLLM의 `custom_extension.transform()`이 공식 연동 지점이라면 KL API와
-별개로 플랫폼 내부 후처리 패키지를 만들어야 한다. 어느 구조가 맞는지는
-[현장 질문지](docs/농협-연동-현장-질문.md)의 답을 받은 뒤 결정한다.
-
 ## 실행 방법
 
 Python 3.13 이상과 `uv`를 기준으로 한다.
@@ -261,7 +223,7 @@ Swagger UI는 `http://127.0.0.1:9101/docs`, 상태 확인은 `/health`에서 볼
 | `tools/run_kl_parser.py` | KL 광고 API 프로토타입 실행기 |
 | `tools/build_review.py` | 저장된 parse JSON에서 P1/P3 재생성 |
 | `tests/` | 외부 모델 없이 검증 가능한 단위·회귀 테스트 |
-| `docs/` | 출력 계약, 실행 지침, KL 기존 구현 설명, 농협 현장 질문 |
+| `docs/` | 출력 계약, 실행 지침, KL 기존 구현 설명 |
 
 ## 테스트
 
@@ -291,5 +253,5 @@ uv pip install "document-processor @ git+ssh://git@github.com/CGINSIDE-ROOKIES/d
 - VLM 결과는 같은 입력에서도 달라질 수 있어 원문 OCR과 판독 근거를 함께 보존한다.
 - KL 프로토타입은 프로세스 내부 백그라운드 작업과 파일 상태를 사용하므로 다중 replica용
   운영 큐가 아니다.
-- 농협 ETL 연동 소스, 컨테이너 이미지, Custom Parser 등록 파일은 현장 질문에 답을 받은
-  뒤 확정한다.
+- 농협 ETL 연동 소스, 컨테이너 이미지, Custom Parser 등록 파일은 농협과 연동 구조를
+  확정한 뒤 준비한다.

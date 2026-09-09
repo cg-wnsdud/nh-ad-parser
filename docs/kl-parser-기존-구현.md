@@ -143,19 +143,6 @@ ETLwithLLM API 방식으로 예상되는 흐름:
 끝나지는 않는다. 파일 단위 작업 관리, 결과 JSON 변환, 좌표 정합성, 표·confidence 차이,
 농협 내부 VLM 호환을 함께 처리해야 한다.
 
-## 미팅에서 확인할 핵심
-
-1. KL에 `/ad/parsing`을 별도 Custom Parser API로 등록할 수 있는가?
-2. 등록 방식은 소스코드 업로드인가, 별도 FastAPI URL 등록인가?
-3. KL이 우리 API에 원본을 보내는가, ETLwithLLM 결과를 보내는가?
-4. KL이 원본을 보낸다면 우리 API가 ETLwithLLM을 호출하는 구조가 맞는가?
-5. ETLwithLLM `transform()`이 DLA 후처리의 공식 연결점이라면 기존 KL API는 어디에
-   위치하는가?
-6. 최종 소비 결과는 HRC인가, 현재 P1/P3인가?
-7. 농협 내부 vLLM은 현재 이미지·JSON Schema 요청과 호환되는가?
-
-전체 질문과 답변 기록란은 [농협 연동 현장 질문](농협-연동-현장-질문.md)에 있다.
-
 ## 실행
 
 ```bash
