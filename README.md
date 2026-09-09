@@ -1,152 +1,240 @@
 # nh-ad-parser
 
-광고물(PDF·이미지·HWP)을 넣으면 **글자·좌표·영역 원본**, **템플릿·판독 근거(P1)**,
-**다음 심의 단계용 영역 입력(P3)** JSON이 나온다.
+농협 광고물에서 문구와 위치를 읽고, 광고 템플릿의 구분값에 맞게 정리하여 다음 심의
+단계가 사용할 JSON을 만드는 파싱 파이프라인이다.
 
+이 저장소는 **광고 내용의 적법 여부를 판단하는 심의 엔진이 아니다.** 문서에 무엇이
+어디에 적혀 있는지 보존하고, 해당 문구가 어떤 심의 항목에 대응하는지 정리하는 단계까지
+담당한다.
+
+## 현재 상태
+
+| 항목 | 현재 구현 |
+| --- | --- |
+| 입력 | PDF, PNG/JPG, HWP/HWPX |
+| OCR·문서 구조 분석 | 사내 DGX-Spark에 서빙된 PaddleX PP-StructureV3 호출 |
+| 이미지 보조 판독 | 사내 DGX-Spark에 서빙된 Gemma VLM 호출 |
+| 후처리 | 읽기 순서·영역 조립, 광고 템플릿 선택, 구분값 분류 |
+| 출력 | 원시 파싱 JSON, 판독 근거 P1, 다음 심의 단계 입력 P3 |
+| 농협 KL·ETLwithLLM 연동 | **미구현 — 현장 확인 후 구현 예정** |
+
+현재 코드는 회사 개발망의 모델 주소를 사용한다. 농협 폐쇄망에서는 회사 모델에 접근할
+수 없으므로 다음 두 부분을 농협 내부 서비스로 바꿔야 한다.
+
+1. PaddleX OCR·레이아웃 분석 → 농협 ETLwithLLM의 DLA/OCR 결과
+2. Gemma VLM → 농협 내부 vLLM에 서빙된 사용 가능 모델
+
+농협용 HTTP 클라이언트, FastAPI 서버, 컨테이너·마운트 설정은 아직 확정된 계약이 아니므로
+이 저장소에 포함하지 않았다. 결정이 필요한 항목은
+[농협 연동 현장 확인 질문](docs/농협-연동-현장-질문.md)에 정리했다.
+
+## 전체 파이프라인
+
+```text
+광고 파일
+  │
+  ├─ 형식 판별·페이지 렌더링
+  │    ├─ PDF: 텍스트 레이어 상태 확인 후 페이지 이미지 생성
+  │    ├─ 이미지: 원본을 캔버스로 사용
+  │    └─ HWP/HWPX: 문서 텍스트·표와 내장 이미지 분리
+  │
+  ├─ OCR·문서 구조 분석
+  │    └─ 현재: DGX-Spark PaddleX PP-StructureV3
+  │
+  ├─ 좌표 복원·중복 제거·영역 조립
+  │    └─ 모든 문구를 영역 또는 미배정 문구로 보존
+  │
+  ├─ VLM 보조 판독
+  │    └─ 현재: DGX-Spark Gemma — 분류, 읽기 순서, 저신뢰 문구 보조 판독
+  │
+  ├─ 농협 광고 템플릿 선택·구분값 분류
+  │
+  └─ parse / evidence(P1) / review-input(P3) JSON 생성
 ```
-입력 ─► 판별·OCR·영역 조립 ─► parse ─► 템플릿 선택·구분 라벨 ─► evidence(P1)
-                                                        └─► review-input(P3)
-```
 
-`nh-ad-review-poc` 에서 **파싱 계층만** 떼어내 구조를 다시 잡은 저장소다.
-실험 산출물·일회성 도구·미확정 코드는 따라오지 않았다. 이관 근거와 경계는
-[docs/이관-기록.md](docs/이관-기록.md).
+### 1. 입력 적재
 
-## 빠른 시작
+`src/nh_parser/ingest/`가 입력 형식을 확인한다.
 
-```bash
-uv sync
-cp .env.example .env      # PADDLEX_URL / GEMMA_URL / GEMMA_MODEL 채우기
-uv run python tools/parse.py --input <파일 또는 폴더> --out out/<날짜>/<라벨> --preview
-```
+- 이미지 파일은 원본 크기를 유지해 처리한다.
+- PDF는 페이지별로 디지털 텍스트 레이어가 있는지 확인한다. 화면의 글자와 텍스트
+  레이어를 함께 활용하는 경우 `hybrid` 경로로 기록한다.
+- HWP/HWPX의 텍스트와 표는 디지털 정보로 사용하고, 내장 이미지는 OCR 경로로 보낸다.
 
-`out/` 을 날짜별로 정리하는 규칙과 예시는
-[docs/테스트-실행-지침.md](docs/테스트-실행-지침.md) 참고.
+### 2. OCR·레이아웃 분석
 
-```
-▶ [예금성상품-적금] 올원e적금.png
-  쪽 1 / 영역 38 / 줄 73 / ...초  → out\<날짜>\<라벨>\parse\...json
-  템플릿 예금성상품-적립식 (confirmed) / 라벨 ... / 검수영역 ...
-  P1 → out\<날짜>\<라벨>\evidence\...json
-  P3 → out\<날짜>\<라벨>\review-input\...json
-```
+`src/nh_parser/pipeline.py`가 긴 이미지를 타일로 나눈 뒤
+`src/nh_parser/ocr/paddlex.py`를 통해 PaddleX에 요청한다. 응답의 문구, 좌표, 영역 종류,
+표 구조를 내부 공통 모델인 `AdDocument`로 정리한다.
 
-기본 실행은 영역별 VLM Reader/Judge까지 수행한다. OCR·레이아웃 원본만 빠르게 확인하려면
-`--parse-only`를 사용한다. 전체 출력에서 Reader/Judge만 끄려면 `--region-reading off`를
-명시한다.
+현재 이 단계가 회사 DGX-Spark에 의존하는 가장 큰 교체 지점이다.
 
-PaddleX·Gemma 는 사내 서버에 있고 **WireGuard VPN 이 연결돼 있어야** 응답한다.
-엔드포인트 설정을 확인하려면 `.env` 의 `GEMMA_URL` 을 `/models` 로 바꿔 GET 해 본다
-(모델명 접두어가 바뀌면 VLM 호출이 전부 400 으로 죽는데 OCR 은 멀쩡히 돌아
-산출물이 그럴듯하게 나온다 — 전례 있음).
+### 3. 영역과 읽기 순서 복원
 
-> **진행 중:** 농협 내부 플랫폼(AgileSoDA `ETL with LLM`)으로 OCR 계층을 옮기는
-> 작업이 있다. 규격은 [docs/농협-ocr-연동-규격.md](docs/농협-ocr-연동-규격.md),
-> 격차·전환 설계·미확인 항목은 [docs/농협-ocr-전환-계획.md](docs/농협-ocr-전환-계획.md).
-> Default JSON → IR 변환기는 `ocr/etlwithllm.py` 에 있고, HTTP 호출부는 접속 정보를
-> 받은 뒤 붙인다. `ocr/paddlex.py` 는 A/B 기준선으로 남긴다.
+`src/nh_parser/layout/`가 타일 좌표를 원본 페이지 좌표로 되돌리고, 겹친 결과를 제거하며,
+OCR 문구를 제목·본문·표·고지문구 등의 영역에 배정한다. 어느 영역에도 연결되지 않은
+문구는 삭제하지 않고 `unassigned_lines`에 남긴다.
 
-## 산출물 구조
+### 4. VLM 보조 판독
 
-산출물은 역할이 다른 세 층으로 나뉜다.
+`src/nh_parser/vlm/`은 이미지와 OCR 결과를 함께 사용하여 문서 종류, 카드 경계, 읽기
+순서와 문구를 보조 판독한다. 현재는 Gemma의 OpenAI 호환
+`/v1/chat/completions` 엔드포인트를 호출한다.
+
+농협 내부 모델이 같은 요청 형식, 이미지 입력, JSON Schema 응답을 지원하는지는 현장에서
+확인해야 한다. 주소만 변경하면 되는지는 이 호환성 확인 후 확정할 수 있다.
+
+### 5. 템플릿·심의 입력 생성
+
+`src/nh_parser/review/`가 19종 농협 광고 템플릿 중 하나를 선택하고 문구를 회사명,
+상품명, 금리, 유의사항 등의 구분값에 연결한다. 연결되지 않은 광고성 문구도 원문 유실을
+막기 위해 결과에 보존한다.
+
+## 산출물
 
 | 폴더 | 역할 |
 | --- | --- |
-| `parse/` | 파서의 원시 `AdDocument`. 기존 호환 및 파싱 결함 진단용 |
-| `evidence/` | P1. parse 전부 + `line_ref` + VLM/Judge + 템플릿 선택 + 구분값 span |
-| `review-input/` | P3. 영역을 유지하고 OCR/VLM 중 선택된 문구 하나를 다음 심의 단계에 전달 |
+| `parse/` | OCR·좌표·영역을 보존한 원시 `AdDocument` |
+| `evidence/` | P1. 원시 결과, 판독 근거, 템플릿 선택, 구분값 연결 결과 |
+| `review-input/` | P3. 다음 심의 단계가 사용할 영역별 대표 문구 |
+| `preview/` | 원본 페이지 위에 영역을 표시한 확인용 이미지 |
 
-세부 계약과 텍스트 선택 정책은 [docs/출력-계약.md](docs/출력-계약.md) 참고.
+세부 계약은 [출력 계약](docs/출력-계약.md)에 설명되어 있다.
 
 ```jsonc
 {
-  "doc_id": "...", "source_file": "...", "file_type": "image",
-  "product_group": "예금성", "ad_type": "상세페이지",   // 파일명·내용 기반 분류
+  "doc_id": "...",
+  "source_file": "광고.pdf",
+  "product_group": "예금성",
+  "ad_type": "상세페이지",
   "pages": [{
-    "page_no": 1, "canvas_w": 1122, "canvas_h": 6429, "dpi": 200,
-    "parse_route": "ocr",          // ocr | digital | hybrid
+    "page_no": 1,
+    "parse_route": "ocr",
     "parse_status": "ok",
     "regions": [{
       "region_id": "p1_r002",
       "bbox": [65, 349, 220, 402],
-      "label": "text",             // PP-DocLayout_plus-L 의 20클래스
-      "layout_score": 0.98,
-      "role": "본문",              // 규칙 기반 — 아래 "범위" 참고
-      "card_no": null,             // 카드형 광고에서 몇 번째 카드인지
-      "table": null,               // 표면 행·열·셀 좌표
+      "label": "text",
+      "role": "본문",
       "lines": [{
         "text": "연이자율",
         "bbox": [65, 349, 220, 402],
         "confidence": 0.998,
-        "source": "ocr",           // ocr | digital | hwp
-        "style": null              // pt·색·굵기 (디지털/HWP 입력일 때)
+        "source": "ocr"
       }]
     }],
-    "unassigned_lines": []         // 어느 영역에도 못 붙은 줄. 0 이어야 정상
+    "unassigned_lines": []
   }]
 }
 ```
 
-**모든 글자는 어딘가에 남는다.** 영역에 못 붙은 줄도 `unassigned_lines` 로 싣는다.
-줄이 사라지면 그 자체가 결함이다.
+## 농협 KL 연동 계획
+
+전달받은 두 자료는 서로 다른 인터페이스를 설명한다.
+
+- Knowledge Lake Custom Parser 예제: KL이 별도 파서 API를 호출하고 작업 UUID로 결과를
+  조회하는 규격
+- ETLwithLLM API 가이드: 파일 분석 요청, 상태·결과 조회 및 `custom_extension` 확장 규격
+
+두 자료만으로는 **KL이 ETLwithLLM을 먼저 실행해 결과를 파서에 전달하는지**, 또는
+**우리 프로그램이 원본 파일을 받아 ETLwithLLM을 호출해야 하는지** 확정할 수 없다.
+따라서 현재 저장소에는 어느 쪽도 구현된 것으로 간주하지 않는다.
+
+현장에서 호출 주체와 입출력 계약이 확인되면 목표 흐름은 다음과 같다.
+
+```text
+KL 또는 광고 심의 호출 시스템                 ← 호출 주체 확인 필요
+  │ 원본 광고
+  ▼
+농협 ETLwithLLM DLA/OCR                         ← 연동 위치 확인 필요
+  │ 문구·좌표·영역·표 구조
+  ▼
+ETL 결과 → AdDocument 변환 어댑터              ← 새로 구현할 부분
+  │
+  ├─ 기존 영역 조립·읽기 순서 처리
+  ├─ 농협 내부 vLLM을 이용한 보조 판독
+  └─ 기존 템플릿 선택·구분값 분류
+  ▼
+P1/P3 또는 KL 요구 결과                         ← 최종 출력 계약 확인 필요
+```
+
+즉 농협 전환 시에도 템플릿 선택과 광고 파싱 후처리 전체를 버리는 것은 아니다. 현재
+PaddleX가 담당하는 OCR·레이아웃 앞단을 농협 결과로 교체하고, 그 결과를 기존 내부 모델로
+변환하여 후처리 계층을 재사용하는 방향이다. 다만 KL이 요구하는 최종 파일이 기존 Custom
+Parser 예제의 HRC JSON인지 현재 P1/P3인지 먼저 결정되어야 한다.
+
+## 실행 방법
+
+Python 3.13 이상과 `uv`를 기준으로 한다.
+
+```bash
+uv sync
+cp .env.example .env
+```
+
+`.env`에 실행 환경의 모델 주소와 모델명을 설정한다. 실제 내부 주소나 인증값은 커밋하지
+않는다.
+
+```dotenv
+PADDLEX_URL=http://YOUR_PADDLEX_HOST:8081/layout-parsing
+GEMMA_URL=http://YOUR_GEMMA_HOST:4000/v1/chat/completions
+GEMMA_MODEL=YOUR_MODEL_NAME
+```
+
+파싱 실행:
+
+```bash
+uv run python tools/parse.py \
+  --input <파일 또는 폴더> \
+  --out out/<YYYY-MM-DD>/<run-label> \
+  --preview
+```
+
+OCR·레이아웃 원본만 빠르게 확인하려면 `--parse-only`를 추가한다. 전체 산출물은 만들되
+영역별 VLM 판독을 끄려면 `--region-reading off`를 사용한다. 실행 규칙은
+[테스트 실행 지침](docs/테스트-실행-지침.md)을 따른다.
 
 ## 폴더 구조
 
-| 경로 | 하는 일 |
+| 경로 | 역할 |
 | --- | --- |
-| `src/nh_parser/config.py` | 모든 설정 한 곳. 임계치마다 왜 그 값인지 실측 근거가 주석에 있다 |
-| `src/nh_parser/ir.py` | 데이터 모델 (`AdDocument` / `AdPage` / `Region` / `Line`) |
-| `src/nh_parser/ingest/` | 입력 적재 — `triage`(형식·텍스트레이어 판별) `canvas`(렌더) `hwp` `assets` `text_style` |
-| `src/nh_parser/ocr/` | `paddlex`(PP-StructureV3 호출) `tiling`(타일 분할) `bands`(글자밀도 밴드) |
-| `src/nh_parser/layout/` | `regions`(줄→영역 배정) `cards`(카드 분할) `gap`(수직 갭 분리) |
-| `src/nh_parser/vlm/` | `client`(Gemma) `cache` `direct` `view` `field_judge` `reading`(판독 교차검증) |
-| `src/nh_parser/review/` | 19종 템플릿 선택, 영역별 구분값 판정, P1/P3 출력 계약 |
-| `src/nh_parser/templates/ad_templates.json` | 농협 HWPX 표에서 생성한 19종 템플릿 카탈로그 |
-| `src/nh_parser/pipeline.py` | 위를 순서대로 엮는다. 진입점은 `process_file(path)` |
-| `tools/parse.py` | parse/P1/P3를 한 번에 만드는 CLI |
-| `tools/build_review.py` | 저장된 parse JSON에서 OCR 재실행 없이 템플릿·P1·P3 재생성 |
-| `tools/build_template_catalog.py` | 템플릿 HWPX의 실제 표 셀에서 카탈로그 재생성 |
-| `tests/` | 187 통과 / 37 건너뜀(샘플 PDF 필요) |
+| `src/nh_parser/ingest/` | 입력 형식 판별, PDF 렌더링, HWP/HWPX·이미지 적재 |
+| `src/nh_parser/ocr/` | 현재 PaddleX 호출, 타일 분할과 OCR 결과 정리 |
+| `src/nh_parser/layout/` | 좌표 복원, 중복 제거, 영역·카드·읽기 구조 조립 |
+| `src/nh_parser/vlm/` | Gemma 호출, 캐시, 문구·순서·필드 보조 판독 |
+| `src/nh_parser/review/` | 템플릿 선택, 구분값 분류, P1/P3 생성 |
+| `src/nh_parser/templates/` | 19종 광고 템플릿 카탈로그 |
+| `src/nh_parser/pipeline.py` | 위 단계를 연결하는 파일 단위 진입점 |
+| `tools/parse.py` | 전체 파이프라인 CLI |
+| `tools/build_review.py` | 저장된 parse JSON에서 P1/P3 재생성 |
+| `tests/` | 외부 모델 없이 검증 가능한 단위·회귀 테스트 |
+| `docs/` | 출력 계약, 실행 지침, 이관 기록, 농협 현장 질문 |
 
-## 범위 — 여기 없는 것
+## 테스트
 
-이 저장소는 **"무엇이 어디에 적혀 있고, 확정 템플릿의 어느 구분값인가"까지**다.
-"그래서 규정에 맞나"는 다음 심의 단계의 책임이다.
+```bash
+uv run pytest
+```
 
-| 없는 것 | 어디 있(었)나 |
-| --- | --- |
-| 규정 검색·준수 여부 판정 | 다음 심의 엔진 |
-| 웹 검수 화면 | 아직 이관하지 않음 |
-| 필드 추출·정규화 내보내기 | `extract.py`, `normalized_export.py`, `kl_export.py` |
-| VLM 역할 판정 | `vlm_judge.py` |
+`tests/`는 배포 런타임에는 필요하지 않지만, 전달받은 소스의 동작과 출력 계약을 검증하는
+근거이므로 저장소에 유지한다. 실제 광고 샘플과 실행 산출물은 고객 데이터가 포함될 수
+있어 Git에 올리지 않는다.
 
-**`region.role` 은 규칙 기반 폴백값이다.** 원래 설계는 VLM(`vlm_judge`)이 이걸
-덮어쓰는 것이고, 그 모듈은 라벨링 계층에 있어 여기 없다. 규칙 결과를 최종 역할로
-믿으면 안 된다.
+## HWP/HWPX 입력
 
-템플릿 구분값 판정은 인공적으로 작성한 라벨 설명 대신 농협 HWPX의 실제 예시문구와
-기재요령을 사용한다. VLM 출력은 선택된 템플릿의 구분 enum 밖으로 나갈 수 없다.
-
-## HWP 입력
-
-HWP/HWPX 는 사내 `document-processor` 가 있어야 한다. 사설 저장소라 `pyproject.toml`
-에 못 박지 않았다 — 넣으면 접근 권한 없는 곳에서 `uv sync` 자체가 실패한다.
-`ingest/hwp.py` 가 함수 안에서 지연 import 하므로 없으면 **HWP 경로만** 막히고
-PDF·이미지는 정상 동작한다.
+HWP/HWPX 입력은 사내 `document-processor`가 필요하다. 사설 저장소이므로 기본
+의존성에 넣지 않았고, 설치되지 않은 환경에서도 PDF·이미지 경로는 동작한다.
 
 ```bash
 uv pip install "document-processor @ git+ssh://git@github.com/CGINSIDE-ROOKIES/document-processor.git"
 ```
 
-## 알려진 한계
+## 현재 범위와 한계
 
-- **한국어 OCR 정확도 천장 88%.** 서버가 `korean_PP-OCRv5_mobile_rec` 를 쓰는데
-  PP-OCRv5 에 한국어 server 인식 모델이 아예 없다. 파라미터로 못 넘는다.
-- **특수문자가 깨진다.** 실측: `① → 1`, `「」 → []`, `⑦번동의서 → 번동의서`,
-  `동의 시¹ → 동의 시1`. 마지막 것은 각주 참조와 값을 구별 못 하게 만든다.
-- **한 덩어리가 두 영역으로 갈리는 경우가 남아 있다.** 실측(올원e적금 36블록 중 3건):
-  숫자와 그 조건, 표제와 본문, 목록 ①②와 ③이 갈렸다.
-- **VLM 호출은 같은 입력에도 흔들린다.** 서버가 fp8 KV 캐시·prefix caching·chunked
-  prefill·투기 디코딩을 켠 채로 떠 있어 `temperature=0` 으로도 못 막는다.
-  카드 분할·밴드 판독처럼 VLM 을 쓰는 단계는 재실행하면 결과가 달라질 수 있다.
-- 표로 검출되지 않는 2열 항목표(`대출대상 | 내용`)는 짝을 못 맞춘다.
+- 규정 검색과 준수 여부 판정은 다음 심의 엔진의 책임이다.
+- 현재 PaddleX/Gemma 호출은 회사 개발망 연결이 필요하며 농협 폐쇄망에서는 그대로
+  실행할 수 없다.
+- 작은 글씨, 특수문자, 표로 검출되지 않은 2열 항목은 현재 모델에서 오류가 발생할 수 있다.
+- VLM 결과는 같은 입력에서도 달라질 수 있어 원문 OCR과 판독 근거를 함께 보존한다.
+- 농협 연동 소스, 컨테이너 이미지, Custom Parser 등록 파일은 현장 질문에 답을 받은 뒤
+  확정한다.
