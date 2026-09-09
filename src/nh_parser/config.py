@@ -64,17 +64,16 @@ if _ENV_FILE is not None:
 
 @dataclass(frozen=True)
 class Settings:
-    # ── 외부 서비스 (Spark, WireGuard 필요) ─────────────────────────
-    # 실제 사내 엔드포인트는 .env(gitignore 대상)에만 둔다 — 여기 기본값은 저장소가
-    # 공개돼도 내부망 주소가 드러나지 않는 자리표시자다. .env.example 참고해 로컬
-    # .env 를 만들 것 (2026-08-01, 저장소가 실제로 공개돼 있던 사고 이후 조치).
+    # ── 외부 OCR/VLM 서비스 ─────────────────────────────────────────
+    # 실제 엔드포인트는 .env(gitignore 대상)에만 둔다. 아래 값은 공유 저장소용
+    # 자리표시자이며 .env.example을 복사해 실행 환경에 맞게 설정한다.
     paddlex_url: str = os.environ.get(
         "PADDLEX_URL", "http://YOUR_PADDLEX_HOST:8081/layout-parsing"
     )
     gemma_url: str = os.environ.get(
         "GEMMA_URL", "http://YOUR_GEMMA_HOST:4000/v1/chat/completions"
     )
-    gemma_model: str = os.environ.get("GEMMA_MODEL", "gemma-4-26b-NVFP4-MTP")
+    gemma_model: str = os.environ.get("GEMMA_MODEL", "YOUR_MODEL_NAME")
     paddlex_timeout_s: int = int(os.environ.get("PADDLEX_TIMEOUT_S", "180"))
     gemma_timeout_s: int = int(os.environ.get("GEMMA_TIMEOUT_S", "120"))
 

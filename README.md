@@ -54,6 +54,7 @@ uv run python tools/parse.py --input <파일 또는 폴더> --out out/<날짜>/<
 > | `tools/etl_mock.py` | 방문 전 리허설용 목 서버 |
 > | [docs/kl-parser-선택적-api.md](docs/kl-parser-선택적-api.md) | 기존 AWX API를 현재 광고 파이프라인 앞단에 선택적으로 붙이는 방법 |
 > | [docs/A안-KL-전체흐름-폐쇄망실행.md](docs/A안-KL-전체흐름-폐쇄망실행.md) | A안의 실제 코드 흐름, KL 호출 의미, 폐쇄망 실행 조건과 미확정 사항 |
+> | [docs/농협-A안-Jupyter-실행-전달.md](docs/농협-A안-Jupyter-실행-전달.md) | Jupyter 실행 순서, 환경 점검, 전달물과 현장 확인값 |
 >
 > `ocr/paddlex.py` 는 A/B 기준선으로 남긴다.
 
@@ -125,7 +126,7 @@ uv run --extra kl-api python tools/run_kl_parser.py --host 127.0.0.1 --port 9101
 | `tools/parse.py` | parse/P1/P3를 한 번에 만드는 CLI |
 | `tools/build_review.py` | 저장된 parse JSON에서 OCR 재실행 없이 템플릿·P1·P3 재생성 |
 | `tools/build_template_catalog.py` | 템플릿 HWPX의 실제 표 셀에서 카탈로그 재생성 |
-| `tests/` | 222 통과 / 37 건너뜀(샘플 PDF 필요, 2026-09-09 기준) |
+| `tests/` | 224 통과 / 37 건너뜀(샘플 PDF 필요, 2026-09-09 기준) |
 
 ## 범위 — 여기 없는 것
 
