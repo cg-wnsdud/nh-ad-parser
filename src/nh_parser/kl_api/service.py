@@ -73,12 +73,9 @@ def _process_etl(source: Path, image_dir: Path):
     ws_id = _required_env("ETL_WS_ID")
     author = _required_env("ETL_AUTHOR")
     project_config = _json_env(
-        "ETL_PROJECT_CONFIG", default={"extractType": "dla"},
+        "ETL_PROJECT_CONFIG", default={"extract_type": "dla"},
     )
-    session = requests.Session()
-    authorization = os.getenv("ETL_AUTHORIZATION", "").strip()
-    if authorization:
-        session.headers["Authorization"] = authorization
+    session = _build_etl_session()
     client = EtlWithLlmClient(
         base_url,
         ws_id,
@@ -94,6 +91,20 @@ def _process_etl(source: Path, image_dir: Path):
     )
     image_dir.mkdir(parents=True, exist_ok=True)
     return process_file_from_dla(source, payload, preview_dir=image_dir)
+
+
+def _build_etl_session() -> requests.Session:
+    """농협이 제공한 인증 상태만 주입한다. 계정/비밀번호 로그인은 수행하지 않는다."""
+    session = requests.Session()
+    token = os.getenv("ETL_TOKEN", "").strip()
+    if token:
+        # 가이드 1.1 로그인 응답은 Set-Cookie의 token으로 인증 상태를 전달한다.
+        session.cookies.set("token", token)
+    authorization = os.getenv("ETL_AUTHORIZATION", "").strip()
+    if authorization:
+        # 이 헤더는 가이드 기본 계약이 아니라 별도 게이트웨이 환경을 위한 선택값이다.
+        session.headers["Authorization"] = authorization
+    return session
 
 
 def _write_ad_outputs(

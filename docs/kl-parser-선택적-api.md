@@ -45,11 +45,13 @@ ETLwithLLM -> DLA -> custom_extension.transform()(B안) -> nh-ad-parser 후처�
 
 ### Knowledge Lake가 AWX 규격으로 호출하는 경우
 
-이때 `kl_parser`가 최초 진입점이다.
+이때 `kl_parser`가 최초 진입점이다. 단, 농협 제공 AWX 원본 예제에 확인되는 접수 URL은
+`POST /parsing`이다. 아래 `/ad/parsing`은 이전 광고 프로토타입에서 추가한 URL이므로,
+KL에 이 URL을 별도로 등록할 수 있는지는 확인 전이다.
 
 ```text
 Knowledge Lake
-  -> POST /ad/parsing (`kl_parser`)
+  -> POST /ad/parsing (`kl_parser`, 광고용 추가 계약: 등록 가능 여부 확인 필요)
   -> ETLwithLLM HTTP API (A안)
   -> nh-ad-parser 후처리
   -> GET /parsing/result/{uuid}
@@ -97,12 +99,15 @@ NH_KL_AD_BACKEND=etl
 ETL_BASE_URL=http://YOUR_ETLWITHLLM_HOST
 ETL_WS_ID=YOUR_WORKSPACE_ID
 ETL_AUTHOR=YOUR_AUTHOR
-ETL_PROJECT_CONFIG={"extractType":"dla"}
+ETL_PROJECT_CONFIG={"extract_type":"dla"}
+# 인증 미들웨어를 쓰는 경우 로그인에서 받은 token 값
+# ETL_TOKEN=...
 ```
 
 ETLwithLLM 공개 HTTP API로 원본 문서를 제출하고 Default JSON을 받아 현재 광고
-후처리에 연결한다. `ETL_AUTHORIZATION`은 농협 제공 인증을 헤더로 전달해야 하는
-배포에서만 설정한다. 로그인·워크스페이스 생성 자체는 구현하지 않는다.
+후처리에 연결한다. 가이드 로그인 응답의 `token` 쿠키가 필요한 환경은 `ETL_TOKEN`에
+전달받은 값을 넣는다. `ETL_AUTHORIZATION`은 별도 게이트웨이가 요구한다고 확인된
+환경에서만 설정한다. 로그인·워크스페이스 생성 자체는 구현하지 않는다.
 
 주의: 이 경로는 PaddleX OCR/DLA만 ETLwithLLM 결과로 대체한다. 현재 파이프라인의
 문서 분류, 영역 보조 판독, 템플릿 선택·라벨링에는 Gemma 호출 경로가 남아 있다.
@@ -132,4 +137,6 @@ ETLwithLLM 공개 HTTP API로 원본 문서를 제출하고 Default JSON을 받�
   별도 작업 상태 저장소가 필요하다.
 - `/parsing` RAG 트랙은 구현하지 않았다. 광고 과제 범위와 별도로 요구가 확정될 때만
   기존 `rag_ingest`/`kl_export` 이식을 검토한다.
+- 농협 AWX 원본 예제는 `/parsing`만 정의한다. 현재 `/ad/parsing`을 실제 KL에 등록할 수
+  있는지는 확인 전이다.
 - B안 `transform()`과 AWX 결과 조회 API의 연결은 가이드에 정의돼 있지 않다.

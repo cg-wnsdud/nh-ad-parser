@@ -41,7 +41,7 @@ nh-ad-parser             씨지인사이드 광고 파싱·검수 입력 생성�
 
 - 외부 DLA 요청은 `POST /api/v1/etl/auto/start`다.
 - form-data의 `tr_data` JSON 문자열과 반복 가능한 `upfiles`를 보낸다.
-- 외부 `prj_config` 키는 p.29의 **`extractType`**이다.
+- 외부 `prj_config` 키는 p.29 원문의 **`extract_type`**이다.
 - 공개 선택값은 `all`, `dla`, `parser`이고 기본값은 `dla`다.
 - 내부 `etl_service.py`는 `CUSTOMIZE`일 때 `extract()`만 호출한다.
 - `transform()`은 `input_file_path`와 `dla_result_path`를 받는 DLA 후처리 훅이다.
@@ -49,10 +49,10 @@ nh-ad-parser             씨지인사이드 광고 파싱·검수 입력 생성�
 
 ### 미확정
 
-- 외부 API에서 `extractType: "customize"`를 허용하는가.
+- 외부 API에서 `extract_type: "customize"`를 허용하는가.
 - 허용할 경우 어떤 문자열이 내부 `ExtractType.CUSTOMIZE`로 매핑되는가.
 - `extract()` 다음에 기본 DLA를 이어 호출할 공식 방법이 있는가.
-- `transform()`이 `extractType: "dla"`에서 항상 호출되는가.
+- `transform()`이 `extract_type: "dla"`에서 항상 호출되는가.
 - `dla_result_path`가 파일인지 디렉터리인지, 어느 JSON을 가리키는가.
 - `transform()` 결과 파일을 어디에 써야 플랫폼 결과로 수집되는가.
 - `CustomExtension`의 실제 import 경로와 `create()`의 구현체 탐색 규칙.
@@ -103,7 +103,7 @@ tools/etl_review_run.py
 
 ```text
 우리 실행기
-  -> POST /etl/auto/start (extractType=dla, res_type=default)
+  -> POST /etl/auto/start (extract_type=dla, res_type=default)
   -> GET /file/info 폴링
   -> GET /file/result/list
   -> GET /file/result/doc
@@ -113,7 +113,7 @@ tools/etl_review_run.py
 
 로그인·워크스페이스 생성은 구현하지 않았다. 농협에서 받은 `ws_id`와 이미 인증된 세션을
 주입하는 경계만 둔다. 클라이언트는 가이드에 없는 `customize`와 잘못된
-`extract_type` 키를 명시적으로 거부한다.
+`extractType` 키를 명시적으로 거부한다.
 
 검토용 실행도 저장소 출력 규칙에 맞춰 다음처럼 사용한다.
 
@@ -203,18 +203,9 @@ cginside_customize_probe.json
 
 ## 8. 기존 KL Custom Parser와의 차이
 
-원본 참고 자료:
-
-```text
-C:\Users\cccjj\cginside\농협프로젝트\1.awx_custom_parser_example_api
-```
-
-기존 구현 참고 자료:
-
-```text
-C:\Users\cccjj\cginside\repo-analysis\paddle-gemma-orchestrator\
-nh-ad-review-poc\kl_parser
-```
+대조 기준은 농협 제공 `1.awx_custom_parser_example_api`와 이전
+`nh-ad-review-poc/kl_parser` 원본이다. 두 자료는 이 저장소에 복사하지 않았으며,
+현재 이식 범위와 차이는 아래 표 및 `docs/kl-parser-선택적-api.md`에 기록했다.
 
 | 항목 | KL Custom Parser | ETL 외부 API A안 | custom extension B/C안 |
 |---|---|---|---|
@@ -280,7 +271,7 @@ Pillow, pypdfium2 등은 ETL 실행 이미지에 별도로 설치되어야 한�
 
 1. 최상위 호출자는 KL인가, ETLwithLLM인가, 별도 우리 서비스인가.
 2. ETL 컨테이너 내부 코드 설치(B)를 허용하는가.
-3. `transform()`이 `extractType=dla`에서 호출된다는 공급사 확인을 받을 수 있는가.
+3. `transform()`이 `extract_type=dla`에서 호출된다는 공급사 확인을 받을 수 있는가.
 4. B가 가능하면 결과 저장·수집 경로와 의존성 반입 방식을 제공받을 수 있는가.
 5. B가 불가능하면 A의 외부 실행기를 어느 농협 내부 서버에서 운영할 것인가.
 6. KL 적재 계약까지 이번 범위라면 기존 `kl_parser`를 현재 패키지에 맞춰 별도 이식할 것인가.
@@ -297,7 +288,7 @@ uv run pytest tests/test_etl_dla_convert.py tests/test_etl_integration_candidate
 검증 범위:
 
 - Default JSON 직접형·`data`·`doc_result`·`doc_result.default` 정규화
-- 문서에 없는 `extractType=customize` 차단
+- 문서에 없는 `extract_type=customize` 차단
 - 외부 API endpoint와 query parameter 계약
 - ETL 좌표를 우리 캔버스로 변환
 - PaddleX를 호출하지 않고 기존 영역 조립으로 연결

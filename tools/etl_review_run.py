@@ -13,6 +13,8 @@ import os
 import sys
 from pathlib import Path
 
+import requests
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -27,8 +29,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--project-config",
-        default='{"extractType":"dla"}',
-        help="가이드 p.29 prj_config JSON. 외부 키는 extractType(camelCase)",
+        default='{"extract_type":"dla"}',
+        help="가이드 p.29 prj_config JSON. 원문 키는 extract_type(snake_case)",
     )
     parser.add_argument("--max-wait", type=float, default=1800)
     parser.add_argument("--poll-interval", type=float, default=5)
@@ -47,7 +49,16 @@ def main() -> None:
     )
 
     config = json.loads(args.project_config)
-    client = EtlWithLlmClient(args.base_url, args.ws_id, args.author)
+    session = requests.Session()
+    token = os.getenv("ETL_TOKEN", "").strip()
+    if token:
+        session.cookies.set("token", token)
+    authorization = os.getenv("ETL_AUTHORIZATION", "").strip()
+    if authorization:
+        session.headers["Authorization"] = authorization
+    client = EtlWithLlmClient(
+        args.base_url, args.ws_id, args.author, session=session,
+    )
     document = client.analyze_file(
         args.input,
         project_config=config,

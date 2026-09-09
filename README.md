@@ -35,10 +35,9 @@ uv run python tools/parse.py --input <파일 또는 폴더> --out out/<날짜>/<
 `--parse-only`를 사용한다. 전체 출력에서 Reader/Judge만 끄려면 `--region-reading off`를
 명시한다.
 
-PaddleX·Gemma 는 사내 서버에 있고 **WireGuard VPN 이 연결돼 있어야** 응답한다.
-엔드포인트 설정을 확인하려면 `.env` 의 `GEMMA_URL` 을 `/models` 로 바꿔 GET 해 본다
-(모델명 접두어가 바뀌면 VLM 호출이 전부 400 으로 죽는데 OCR 은 멀쩡히 돌아
-산출물이 그럴듯하게 나온다 — 전례 있음).
+개발용 PaddleX·Gemma 엔드포인트는 `.env`에만 설정한다. `GEMMA_MODEL`이 실제
+게이트웨이의 `/models` 응답과 다르면 VLM 단계만 실패하고 OCR 산출물은 생성될 수 있으므로
+실행 전에 두 값을 함께 확인한다.
 
 > **진행 중:** 농협 내부 플랫폼(AgileSoDA `ETL with LLM`)으로 OCR 계층을 옮기는
 > 작업이 있다. 이 API 는 **농협 폐쇄망 안에서만 호출**할 수 있어 현장 방문이 유일한
@@ -54,6 +53,7 @@ PaddleX·Gemma 는 사내 서버에 있고 **WireGuard VPN 이 연결돼 있어�
 > | `tools/etl_probe.py` | 현장 반입용 프로브. **의존성 0, 단일 파일** |
 > | `tools/etl_mock.py` | 방문 전 리허설용 목 서버 |
 > | [docs/kl-parser-선택적-api.md](docs/kl-parser-선택적-api.md) | 기존 AWX API를 현재 광고 파이프라인 앞단에 선택적으로 붙이는 방법 |
+> | [docs/A안-KL-전체흐름-폐쇄망실행.md](docs/A안-KL-전체흐름-폐쇄망실행.md) | A안의 실제 코드 흐름, KL 호출 의미, 폐쇄망 실행 조건과 미확정 사항 |
 >
 > `ocr/paddlex.py` 는 A/B 기준선으로 남긴다.
 
@@ -125,7 +125,7 @@ uv run --extra kl-api python tools/run_kl_parser.py --host 127.0.0.1 --port 9101
 | `tools/parse.py` | parse/P1/P3를 한 번에 만드는 CLI |
 | `tools/build_review.py` | 저장된 parse JSON에서 OCR 재실행 없이 템플릿·P1·P3 재생성 |
 | `tools/build_template_catalog.py` | 템플릿 HWPX의 실제 표 셀에서 카탈로그 재생성 |
-| `tests/` | 187 통과 / 37 건너뜀(샘플 PDF 필요) |
+| `tests/` | 222 통과 / 37 건너뜀(샘플 PDF 필요, 2026-09-09 기준) |
 
 ## 범위 — 여기 없는 것
 

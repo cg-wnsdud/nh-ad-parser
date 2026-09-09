@@ -204,14 +204,14 @@ class EtlWithLlmClient:
 
     @staticmethod
     def _validate_project_config(config: dict[str, Any]) -> None:
-        if "extract_type" in config:
+        if "extractType" in config:
             raise ValueError(
-                "외부 JSON 키는 extract_type이 아니라 가이드 p.29의 extractType입니다"
+                "외부 JSON 키는 extractType이 아니라 가이드 p.29의 extract_type입니다"
             )
-        extract_type = config.get("extractType", "dla")
+        extract_type = config.get("extract_type", "dla")
         if extract_type not in PUBLIC_EXTRACT_TYPES:
             raise ValueError(
-                f"공개 API에서 확인되지 않은 extractType={extract_type!r}; "
+                f"공개 API에서 확인되지 않은 extract_type={extract_type!r}; "
                 f"허용값은 {sorted(PUBLIC_EXTRACT_TYPES)}"
             )
 

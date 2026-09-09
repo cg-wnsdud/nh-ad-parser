@@ -129,6 +129,14 @@ def test_backend_name_is_fail_closed(monkeypatch):
         configured_backend()
 
 
+def test_etl_session_uses_documented_token_cookie(monkeypatch):
+    monkeypatch.setenv("ETL_TOKEN", "provided-token")
+    monkeypatch.delenv("ETL_AUTHORIZATION", raising=False)
+    session = service._build_etl_session()
+    assert session.cookies.get("token") == "provided-token"
+    assert "Authorization" not in session.headers
+
+
 def test_current_p1_p3_are_exported_with_reported_kl_names(
     tmp_path: Path, monkeypatch,
 ):

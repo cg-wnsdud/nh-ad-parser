@@ -62,9 +62,9 @@ def test_load_default_document_selects_matching_pdf_name(tmp_path: Path):
 
 def test_external_api_rejects_undocumented_customize():
     with pytest.raises(ValueError, match="확인되지 않은"):
-        EtlWithLlmClient._validate_project_config({"extractType": "customize"})
-    with pytest.raises(ValueError, match="extractType"):
-        EtlWithLlmClient._validate_project_config({"extract_type": "dla"})
+        EtlWithLlmClient._validate_project_config({"extract_type": "customize"})
+    with pytest.raises(ValueError, match="extract_type"):
+        EtlWithLlmClient._validate_project_config({"extractType": "dla"})
 
 
 class _Response:
@@ -116,10 +116,10 @@ def test_external_api_full_document_flow_uses_public_contract(tmp_path: Path):
     client = EtlWithLlmClient(
         "http://etl.local", "WS1", "tester", session=session, request_timeout_s=3,
     )
-    doc = client.analyze_file(source, project_config={"extractType": "dla"})
+    doc = client.analyze_file(source, project_config={"extract_type": "dla"})
     assert doc["pdfName"] == "sample.pdf"
     sent = json.loads(session.posts[0][1]["data"]["tr_data"])
-    assert sent["prj_config"] == {"extractType": "dla"}
+    assert sent["prj_config"] == {"extract_type": "dla"}
     assert sent["res_type"] == "default"
     assert [call[1]["params"] for call in session.gets] == [
         {"file_path": "sample.pdf/v1/sample.pdf"},
