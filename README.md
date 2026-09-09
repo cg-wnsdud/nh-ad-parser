@@ -53,8 +53,17 @@ PaddleX·Gemma 는 사내 서버에 있고 **WireGuard VPN 이 연결돼 있어�
 > | [integrations/etlwithllm-review/README.md](integrations/etlwithllm-review/README.md) | 외부 API / transform / CUSTOMIZE 후보와 KL Custom Parser 비교 |
 > | `tools/etl_probe.py` | 현장 반입용 프로브. **의존성 0, 단일 파일** |
 > | `tools/etl_mock.py` | 방문 전 리허설용 목 서버 |
+> | [docs/kl-parser-선택적-api.md](docs/kl-parser-선택적-api.md) | 기존 AWX API를 현재 광고 파이프라인 앞단에 선택적으로 붙이는 방법 |
 >
 > `ocr/paddlex.py` 는 A/B 기준선으로 남긴다.
+
+Knowledge Lake/AWX의 비동기 광고 API가 필요하다고 확정된 경우에만 선택적 서버를
+실행한다. 일반 광고 파싱에는 필요하지 않다.
+
+```bash
+uv sync --extra kl-api
+uv run --extra kl-api python tools/run_kl_parser.py --host 127.0.0.1 --port 9101
+```
 
 ## 산출물 구조
 

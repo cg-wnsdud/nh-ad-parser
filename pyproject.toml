@@ -19,6 +19,16 @@ dependencies = [
     "requests>=2.32",
 ]
 
+[project.optional-dependencies]
+# Knowledge Lake/AWX Custom Parser 규격의 선택적 HTTP 진입점. 광고 파싱 엔진만
+# 라이브러리로 쓰는 설치에는 필요하지 않으므로 기본 의존성에서 분리한다.
+kl-api = [
+    # 전달받은 농협 베이스 이미지 확인값(0.139.2)보다 새 API에 기대지 않는다.
+    "fastapi>=0.115,<0.140",
+    "uvicorn>=0.34,<1",
+    "python-multipart>=0.0.17,<1",
+]
+
 # HWP/HWPX 입력은 사내 `document-processor` 가 있어야 한다. 사설 저장소라
 # 여기에 git URL 로 못 박으면 접근 권한 없는 곳에서 `uv sync` 자체가 실패한다.
 # ingest/hwp.py 가 함수 안에서 지연 import 하므로 없으면 HWP 경로만 막히고
@@ -26,6 +36,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    # 최신 Starlette의 TestClient에만 필요하다. API 서버 런타임 의존성은 아니다.
+    "httpx2>=2.12,<3",
     "pytest>=8.0",
     "pyyaml>=6.0.3",
 ]

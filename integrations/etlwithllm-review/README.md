@@ -26,10 +26,10 @@ nh-ad-parser             씨지인사이드 광고 파싱·검수 입력 생성�
 
 | 후보 | 구조 | 문서 근거 | 현재 상태 | 선택 조건 |
 |---|---|---:|---|---|
-| **A. 외부 API** | 우리 프로세스가 ETL API 호출 | 높음 | 실행 코드 완료 | ETL 컨테이너에 우리 코드를 넣지 않을 때 |
+| **A. 농협 내부 별도 프로세스/API** | ETL 컨테이너 밖의 우리 프로세스가 농협 내부 ETL HTTP API 호출 | 높음 | 실행 코드 완료 | ETL 컨테이너에 우리 코드를 넣지 않을 때 |
 | **B. transform 확장** | ETL DLA 뒤에 우리 코드 실행 | 중간~높음 | 구현 후보 완료 | `transform()` 호출·출력 계약을 확인했을 때 |
 | **C. CUSTOMIZE 프로브** | `extract()` 인자만 기록 | 낮음 | 비운영 프로브 완료 | `CUSTOMIZE`의 실제 후속 흐름을 확인할 때 |
-| **KL Custom Parser** | KL이 `/parsing` API 호출 | 별도 규격 | 기존 코드는 수정하지 않음 | 최상위 호출자가 KL일 때 |
+| **KL Custom Parser** | KL이 `/ad/parsing` API 호출 | 별도 규격 | 현재 저장소용 선택적 진입점 구현 | 최상위 호출자가 KL일 때 |
 
 현재 추천 순서는 **A를 기준선으로 두고 B를 우선 문의**하는 것이다. B가 공식 지원되면
 배포가 단순해질 수 있다. C는 `extract()` 뒤에 DLA가 자동 실행된다는 확인을 받기 전에는
@@ -87,7 +87,10 @@ ETL Default JSON
 지원 범위는 우선 PDF/PNG/JPG 전체 페이지다. `start_page/end_page`로 일부 페이지만
 분석한 결과와 HWP 직접 파싱은 방향 확정 뒤 별도로 설계한다.
 
-## 5. A안 - ETL 공개 API를 외부에서 호출
+## 5. A안 - 농협 내부의 별도 프로세스에서 ETL 공개 API 호출
+
+여기서 `외부`는 인터넷·회사망을 뜻하지 않는다. 농협 폐쇄망 안에서 ETLwithLLM
+컨테이너와 별도로 실행되는 우리 프로그램이 ETLwithLLM의 HTTP API를 호출한다는 뜻이다.
 
 코드:
 
@@ -235,9 +238,11 @@ KL -> kl_parser -> ETL 외부 API(A) -> 공통 파이프라인 -> KL ZIP
 ETL 요청 -> DLA -> transform(B) -> 우리 결과
 ```
 
-이므로 `kl_parser`가 필요하지 않을 수 있다. 기존 `kl_parser`는 이번 작업에서 수정하지
-않았다. 또한 과거 패키지명 `nh_parsing`을 import하므로 현재 `nh_parser`에 바로 붙는
-완성본으로 간주해서도 안 된다.
+이므로 `kl_parser`가 필요하지 않을 수 있다. 과거 구현은 수정하지 않았고, 현재 저장소에
+광고 전용 선택적 진입점 `src/nh_parser/kl_api/`를 별도로 구현했다. `local` 백엔드는
+현재 DGX 파이프라인을, `etl` 백엔드는 A안을 호출한다. 일반 문서 RAG용 `/parsing`은
+현재 저장소에 `rag_ingest`/`kl_export`가 없으므로 명시적으로 501을 반환한다. 자세한
+실행법은 `docs/kl-parser-선택적-api.md`를 참고한다.
 
 ## 9. `implements/api/`는 언제 쓰나
 
@@ -250,8 +255,9 @@ ETL 요청 -> DLA -> transform(B) -> 우리 결과
 - 특정 문서 후처리 재실행
 - 진단·health endpoint
 
-현재 B/C 후보의 `get_custom_routers()`는 빈 리스트를 반환한다. KL의 `/parsing` 계약을
-이 폴더에 옮기기로 결정하기 전에는 불필요한 API 표면을 만들지 않는다.
+현재 B/C 후보의 `get_custom_routers()`는 빈 리스트를 반환한다. 현재 저장소의
+`kl_api`는 ETL 컨테이너 밖에서 실행하는 별도 FastAPI 앱이며 `implements/api/`로
+자동 등록되는 코드가 아니다.
 
 ## 10. 마운트와 배포 이미지
 
