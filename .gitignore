@@ -22,6 +22,21 @@ docs/농협-ocr-인계-프롬프트.md
 docs/이관-기록.md
 docs/농협-연동-현장-질문.md
 docs/농협-ocr-인계-프롬프트.md
+docs/농협-KL-ETLwithLLM-개념-전체정리.md
+
+# DGX Spark/PaddleX 서빙 학습·실측 문서. 사내 인프라 정보와 로컬 실험 기록이
+# 포함되므로 제품 코드 저장소에서는 추적하지 않는다.
+docs/서빙-학습-*.md
+docs/스파크-PaddleOCR-서빙-현재까지-통합학습.md
+docs/spark-서빙-구성-확정.md
+docs/PP-StructureV3-영역분할-검증보고서-*.md
+docs/농협-광고-영역분할-전용모델-검토.md
+
+# fc87 조사 때 만든 일회성 전체 수집기. 출력 파일을 server에 만들고 과거 /data 경로를
+# 전제로 하므로 제품 도구로 추적하지 않는다. 재조회는 stdout 전용 inspect script 사용.
+tools/collect_serving_info.sh
+tools/audit_serving_readonly.sh
+tools/inspect_paddlex_pipeline_readonly.sh
 
 # 로컬 에이전트/도구 상태
 .agents/
@@ -32,6 +47,12 @@ CLAUDE.md
 
 # ── VLM 응답 캐시 ──────────────────────────────────────────────
 .vlm_cache*/
+
+# Label Studio 로컬 상태와 고객 원본/렌더 이미지/내보내기. Compose와 라벨 정의만
+# 추적하고 SQLite·업로드·annotation export는 로컬에 둔다.
+experiments/layout-labeling/.local/
+experiments/layout-labeling/exports/
+experiments/layout-labeling/tasks/
 
 # ── 비밀 ───────────────────────────────────────────────────────
 .env

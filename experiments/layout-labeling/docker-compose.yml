@@ -1,0 +1,17 @@
+name: nh-layout-labeling
+
+services:
+  label-studio:
+    # 2026-03-13 공개된 안정 릴리스. latest를 쓰면 같은 실험 환경을 재현할 수 없다.
+    image: heartexlabs/label-studio:1.23.0@sha256:aa461572e8f9d86a1bf9520c1db620204e86160fd2f80dd7e9d40ac84a8828ea
+    container_name: nh-layout-label-studio
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      LABEL_STUDIO_HOST: http://localhost:8080
+      LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED: "true"
+      LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT: /label-studio/files
+    volumes:
+      - ./.local/data:/label-studio/data
+      - ./.local/media:/label-studio/files/pages:ro
+    init: true

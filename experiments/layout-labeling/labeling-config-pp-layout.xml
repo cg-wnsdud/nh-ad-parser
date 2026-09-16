@@ -1,0 +1,27 @@
+<View>
+  <Header value="PP-DocLayout_plus-L의 20개 클래스와 같은 기준으로 박스를 표시합니다." />
+  <Image name="image" value="$image" zoom="true" zoomControl="true" rotateControl="false" />
+  <RectangleLabels name="pp_layout" toName="image" strokeWidth="2" choice="single">
+    <Label value="paragraph_title" background="#E53935" />
+    <Label value="image" background="#8E24AA" />
+    <Label value="text" background="#1E88E5" />
+    <Label value="number" background="#3949AB" />
+    <Label value="abstract" background="#00897B" />
+    <Label value="content" background="#43A047" />
+    <Label value="figure_title" background="#7CB342" />
+    <Label value="formula" background="#C0CA33" />
+    <Label value="table" background="#FDD835" />
+    <Label value="reference" background="#FFB300" />
+    <Label value="doc_title" background="#FB8C00" />
+    <Label value="footnote" background="#F4511E" />
+    <Label value="header" background="#6D4C41" />
+    <Label value="algorithm" background="#757575" />
+    <Label value="footer" background="#546E7A" />
+    <Label value="seal" background="#D81B60" />
+    <Label value="chart" background="#5E35B1" />
+    <Label value="formula_number" background="#039BE5" />
+    <Label value="aside_text" background="#00ACC1" />
+    <Label value="reference_content" background="#00838F" />
+  </RectangleLabels>
+  <TextArea name="review_note" toName="image" placeholder="애매한 경계, 제외 이유, 판정 근거" rows="3" />
+</View>

@@ -237,6 +237,30 @@ def _contains(outer: list[int] | None, inner: list[int]) -> bool:
             and outer[2] + pad >= inner[2] and outer[3] + pad >= inner[3])
 
 
+def _layout_option(value):
+    """레이아웃 후처리 옵션을 payload 값으로 바꾼다. `None` 이면 **키를 안 보낸다**.
+
+    `layoutMergeBboxesMode` 의 `"server"` 센티널과 같은 규약이다 — 키를 비워 서버
+    PP-StructureV3.yml 기본값을 그대로 쓴다. 환경변수로 오면 항상 문자열이므로 숫자
+    문자열은 float 로 되돌린다. 숫자도 센티널도 아닌 문자열은 서버에서 500 으로 죽고
+    (프로브 실측: `mode='헛소리'`) 그때는 어느 값이 문제였는지 응답만 보고는 알기
+    어렵다 — 그래서 여기서 먼저 막는다.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() == "server":
+            return None
+        try:
+            return float(text)
+        except ValueError as exc:
+            raise ValueError(
+                f"레이아웃 옵션 값을 해석할 수 없다: {value!r} — 숫자 또는 'server'"
+            ) from exc
+    return value
+
+
 def request_layout_parsing(image: Image.Image) -> PaddleXPageResult:
     payload = {
         "file": base64.b64encode(_encode_jpeg(image)).decode("ascii"),
@@ -254,6 +278,14 @@ def request_layout_parsing(image: Image.Image) -> PaddleXPageResult:
     # 바꾸는 것이 아니라 우리 요청에서 이 항목을 비우는 것뿐이다.
     if SETTINGS.paddlex_layout_merge_bboxes_mode not in ("", "server"):
         payload["layoutMergeBboxesMode"] = SETTINGS.paddlex_layout_merge_bboxes_mode
+    # 같은 규약의 레이아웃 후처리 두 항목 (기본 "server" = 키를 안 보냄)
+    for key, raw in (
+        ("layoutThreshold", SETTINGS.paddlex_layout_threshold),
+        ("layoutUnclipRatio", SETTINGS.paddlex_layout_unclip_ratio),
+    ):
+        option = _layout_option(raw)
+        if option is not None:
+            payload[key] = option
     resp = requests.post(SETTINGS.paddlex_url, json=payload, timeout=SETTINGS.paddlex_timeout_s)
     resp.raise_for_status()
     body = resp.json()

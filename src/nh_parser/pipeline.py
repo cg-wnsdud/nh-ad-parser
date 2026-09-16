@@ -28,47 +28,77 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
 HWP_EXTS = {".hwp", ".hwpx"}
 
 
-def process_file(path: Path, preview_dir: Path | None = None) -> AdDocument:
+def process_file(
+    path: Path,
+    preview_dir: Path | None = None,
+    *,
+    use_vlm: bool = True,
+) -> AdDocument:
+    """원본 파일을 파싱한다.
+
+    ``use_vlm=False``는 입력 적재·렌더링·타일링·PaddleX·좌표 복원·중복 제거·영역
+    조립까지는 그대로 실행하고, 외부 VLM 호출만 건너뛴다. 레이아웃 실험에서 OCR
+    전후의 결정론 경로를 실제 서비스와 같게 유지하기 위한 모드다. 기본값은 기존 동작과
+    같은 True다.
+    """
     ext = path.suffix.lower()
     if ext in HWP_EXTS:
-        return _process_hwp(path, preview_dir)
+        return _process_hwp(path, preview_dir, use_vlm=use_vlm)
     if ext in IMAGE_EXTS:
-        return _process_image(path, preview_dir)
+        return _process_image(path, preview_dir, use_vlm=use_vlm)
     if ext == ".pdf":
-        return _process_pdf(path, preview_dir)
+        return _process_pdf(path, preview_dir, use_vlm=use_vlm)
     doc = AdDocument(doc_id=path.stem, source_file=path.name, file_type=ext.lstrip("."))
     doc.notes.append(f"미지원 확장자 {ext} — 판독 불가 처리 (F-001 예외)")
     doc.pages.append(AdPage(page_no=1, parse_route="ocr", parse_status="unreadable"))
     return doc
 
 
-def _process_image(path: Path, preview_dir: Path | None) -> AdDocument:
+def _process_image(
+    path: Path, preview_dir: Path | None, *, use_vlm: bool = True,
+) -> AdDocument:
     doc = AdDocument(doc_id=path.stem, source_file=path.name, file_type="image")
     canvas = load_image_canvas(path)
     page = _ocr_canvas_to_page(canvas, page_no=1)
-    _apply_vlm_judgments(page, canvas.image)
+    if use_vlm:
+        _apply_vlm_judgments(page, canvas.image)
+    else:
+        _finalize_without_vlm(page)
     doc.pages.append(page)
-    _classify_into(doc, canvas.image)
+    if use_vlm:
+        _classify_into(doc, canvas.image)
+    else:
+        doc.notes.append("레이아웃 실험 모드: VLM 호출 생략")
     if preview_dir:
         _save_preview(canvas, page, preview_dir, doc.doc_id)
     return doc
 
 
-def _process_hwp(path: Path, preview_dir: Path | None) -> AdDocument:
+def _process_hwp(
+    path: Path, preview_dir: Path | None, *, use_vlm: bool = True,
+) -> AdDocument:
     """HWP: 텍스트·표는 디지털 정본, 내장 이미지는 PNG 와 동일한 OCR/VLM 트랙."""
 
     def _image_page(img: Image.Image, page_no: int) -> AdPage:
         canvas = CanvasPage(image=rgb_on_white(img), page_no=page_no)
         page = _ocr_canvas_to_page(canvas, page_no)
-        _apply_vlm_judgments(page, canvas.image)
+        if use_vlm:
+            _apply_vlm_judgments(page, canvas.image)
+        else:
+            _finalize_without_vlm(page)
         if preview_dir:
             _save_preview(canvas, page, preview_dir, path.stem)
         return page
 
-    return ingest_hwp(path, image_page_processor=_image_page)
+    doc = ingest_hwp(path, image_page_processor=_image_page)
+    if not use_vlm:
+        doc.notes.append("레이아웃 실험 모드: VLM 호출 생략")
+    return doc
 
 
-def _process_pdf(path: Path, preview_dir: Path | None) -> AdDocument:
+def _process_pdf(
+    path: Path, preview_dir: Path | None, *, use_vlm: bool = True,
+) -> AdDocument:
     from .ingest.triage import extract_digital_lines, triage_page
 
     doc = AdDocument(doc_id=path.stem, source_file=path.name, file_type="pdf")
@@ -128,13 +158,18 @@ def _process_pdf(path: Path, preview_dir: Path | None) -> AdDocument:
         else:  # scan_like
             page = _ocr_canvas_to_page(canvas, page_no)
         page.triage = verdict.as_dict()
-        _apply_vlm_judgments(page, canvas.image)
+        if use_vlm:
+            _apply_vlm_judgments(page, canvas.image)
+        else:
+            _finalize_without_vlm(page)
         doc.pages.append(page)
         if preview_dir:
             _save_preview(canvas, page, preview_dir, doc.doc_id)
 
-    if first_canvas is not None:
+    if first_canvas is not None and use_vlm:
         _classify_into(doc, first_canvas)
+    if not use_vlm:
+        doc.notes.append("레이아웃 실험 모드: VLM 호출 생략")
     return doc
 
 
@@ -284,6 +319,18 @@ def _dedupe_tiled_layout_blocks(blocks: list[LayoutBlock]) -> tuple[list[LayoutB
         else:
             kept.append(block)
     return kept, merged_count
+
+
+def _finalize_without_vlm(page: AdPage) -> None:
+    """VLM 없이도 필요한 결정론 영역 후처리를 마친다.
+
+    `_apply_vlm_judgments` 안에는 외부 모델 호출과 좌표 기반 후처리가 섞여 있다. 실험에서
+    함수를 통째로 건너뛰면 미배정 라인 흡수와 읽기 순서까지 달라져 PaddleX 설정 비교가
+    오염된다. 아래 세 단계만 동일하게 실행하면 네트워크 VLM 호출 없이 비교할 수 있다.
+    """
+    _absorb_unassigned_into_regions(page)
+    _note_layout_gaps(page)
+    _finalize_reading_order(page)
 
 
 def _apply_vlm_judgments(page: AdPage, canvas_img: Image.Image | None) -> None:

@@ -115,6 +115,29 @@ class Settings:
     paddlex_layout_merge_bboxes_mode: str = os.environ.get(
         "PADDLEX_LAYOUT_MERGE_BBOXES_MODE", "small"
     ).strip().lower()
+    # 레이아웃 검출 후처리 두 항목. 기본값 "server" 는 위 merge 모드와 **같은 규약**이다 —
+    # 요청에서 키를 아예 빼 서버 PP-StructureV3.yml 기본값을 그대로 쓴다. 즉 이 필드를
+    # 추가해도 기존 요청 본문은 한 글자도 달라지지 않는다(공유 서버·타 프로젝트 무영향).
+    #
+    # 왜 필드를 만드나. 2026-09-08 프로브(tmp/probe_params_table.json)에서 영역 수를 가장
+    # 크게 움직인 것이 merge 모드가 아니라 이 둘이었다 (기준 33블록):
+    #   layoutThreshold 0.3 → 35블록 / 0.7 → 20블록      (merge=large 는 28블록)
+    #   layoutUnclipRatio 1.5 → 25블록
+    # 그런데 파이프라인에 연결이 없어 probe 로 서버를 직접 때릴 때만 볼 수 있었다.
+    #
+    # 주의 1. unclip 은 **순수 영역 축이 아니다.** 1.5 에서 OCR 줄이 119→132, 호출이
+    #   7.1→8.9초로 함께 변했다. 영역만 보고 판단하면 안 되고 줄·글자 수를 같이 봐야 한다.
+    # 주의 2. 공식 문서는 클래스별 dict(`{"2":0.3}`)를 지원한다고 적었지만, 같은 프로브에서
+    #   존재하지 않는 키 `{"999":0.3}` 가 동일 결과를 냈다 — 현재 서버 래퍼에서 dict 가
+    #   먹는지 확인되지 않았다. 스칼라(또는 unclip 의 배열)만 쓸 것.
+    # 문서화된 기본값은 threshold 0.5 / unclip 1.0 이다(PaddleX 공식). 응답이 이 둘을
+    # 되돌려주지 않아 서버 실값은 미확인 — 그래서 "현행"은 0.5/1.0 이 아니라 "미지정"이다.
+    paddlex_layout_threshold: str | float | list | dict = os.environ.get(
+        "PADDLEX_LAYOUT_THRESHOLD", "server"
+    )
+    paddlex_layout_unclip_ratio: str | float | list | dict = os.environ.get(
+        "PADDLEX_LAYOUT_UNCLIP_RATIO", "server"
+    )
     paddlex_use_formula_recognition: bool = False  # 광고물에 수식 없음 — 속도 절약
     # 방향 분류기(기본 True)가 얇은 회색 fine-print 를 180도 회전으로 오판해
     # 거꾸로 인식('링이어니을용은' 사건, 2026-07-17 실측). 디지털 캡처/정방향
