@@ -180,7 +180,11 @@ def _ocr_canvas_to_page(
     route: str = "ocr",
 ) -> AdPage:
     """캔버스 → 타일링 → PaddleX → 좌표 복원 → 영역/필드 (설계서 6.3~6.6)."""
+    from . import trace
+
     tiles = make_tiles(canvas.image)
+    tracing = trace.active()
+    tile_traces: list[dict] = []
     all_lines: list[Line] = []
     all_blocks: list[LayoutBlock] = []
     errors: list[str] = []
@@ -189,7 +193,21 @@ def _ocr_canvas_to_page(
             result = request_layout_parsing(tile.image)
         except Exception as exc:
             errors.append(f"y={tile.y_offset}: {exc}")
+            if tracing:
+                tile_traces.append({
+                    "index": tile_index, "y_offset": tile.y_offset,
+                    "width": tile.image.width, "height": tile.image.height,
+                    "error": str(exc),
+                })
             continue
+        if tracing:
+            # 좌표 복원 **전** 값이다 — 타일 하나가 모델에게 어떻게 보였는지가 여기 남는다.
+            tile_traces.append({
+                "index": tile_index, "y_offset": tile.y_offset,
+                "width": tile.image.width, "height": tile.image.height,
+                "ocr_lines": len(result.ocr_lines),
+                "blocks": [trace.block_record(b) for b in result.blocks],
+            })
         all_lines.extend(restore_coords(result.ocr_lines, tile.y_offset))
         for block in result.blocks:
             shifted = LayoutBlock(
@@ -207,8 +225,24 @@ def _ocr_canvas_to_page(
             )
             all_blocks.append(shifted)
 
+    raw_page_blocks = [trace.block_record(b) for b in all_blocks] if tracing else []
     lines = dedupe_lines(all_lines)
     all_blocks, duplicate_blocks = _dedupe_tiled_layout_blocks(all_blocks)
+    if tracing:
+        trace.record({
+            "page_no": page_no,
+            "canvas_w": canvas.image.width,
+            "canvas_h": canvas.image.height,
+            "route": route,
+            "tiles": tile_traces,
+            # 페이지 좌표로 되돌린 직후 — 타일 중복이 아직 살아 있다
+            "raw_blocks": raw_page_blocks,
+            # 타일 중복 병합 뒤. Region 조립에 실제로 들어가는 목록이다
+            "blocks": [trace.block_record(b) for b in all_blocks],
+            "merged_blocks": duplicate_blocks,
+            "ocr_lines_raw": len(all_lines),
+            "ocr_lines_deduped": len(lines),
+        })
     if extra_digital:
         # 디지털 우선(설계서 원칙 4): OCR 라인 중 디지털과 겹치는 것 제거
         lines = _merge_digital_ocr(extra_digital, lines)

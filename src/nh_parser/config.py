@@ -89,9 +89,16 @@ class Settings:
     min_ink_coverage: float = 0.30
 
     # ── 렌더/타일링 ─────────────────────────────────────────────
-    pdf_render_dpi: int = 200
-    tile_max_height_px: int = 1600        # 조각 하나의 높이 상한 (자르는 위치는 글자 밀도가 결정)
-    tile_overlap_px: int = 200
+    # 렌더/타일링 3개는 **서버를 안 건드리는 실험 축**이다. 레이아웃 모델이 입력을
+    # 800x800 정사각으로 종횡비 무시하고 눌러 넣으므로(PP-DocLayout_plus-L
+    # inference.yml `keep_ratio: false`, 2026-09-16 실측), 타일의 모양이 곧 실효
+    # 해상도를 정한다. 그래서 환경변수로 이번 실행만 바꿀 수 있게 열어 둔다.
+    # 기본값은 그대로이므로 지정하지 않으면 운영 동작은 한 글자도 안 달라진다.
+    pdf_render_dpi: int = int(os.environ.get("PDF_RENDER_DPI", "200"))
+    tile_max_height_px: int = int(       # 조각 하나의 높이 상한 (자르는 위치는 글자 밀도가 결정)
+        os.environ.get("TILE_MAX_HEIGHT_PX", "1600")
+    )
+    tile_overlap_px: int = int(os.environ.get("TILE_OVERLAP_PX", "200"))
     # 타일링 트리거. 이 값은 이전 프로젝트에서 물려받은 것이고 아래 2500 과 맞춰 계산한
     # 값이 아니다 — 그래서 2500~4000 구간(통짜로 들어가는데 서버는 2500 으로 줄이는 구간)이
     # 검증된 적이 없었다. 2026-07-28 실측으로 확인함: 폭 720px 고정, 높이 2200~6111px 로
@@ -100,13 +107,19 @@ class Settings:
     # 읽기 때문이다. 즉 이 구간의 위험은 이 데이터에서는 발현하지 않는다.
     # 다만 문서 1건·폰트 1종 실측이라 일반화는 안 되고, 샘플 5개 중 이 구간에 드는 문서가
     # 하나도 없다(1120px 또는 6100px+). 해당 크기 입력이 실제로 들어오면 재확인할 것.
-    tile_trigger_height_px: int = 4000    # 장변 기준 타일링 트리거
+    tile_trigger_height_px: int = int(    # 장변 기준 타일링 트리거
+        os.environ.get("TILE_TRIGGER_HEIGHT_PX", "4000")
+    )
 
     # ── PaddleX PP-StructureV3 서빙 파라미터 (공식 predict 파라미터의 camelCase) ──
     # text_det_limit_side_len 서버 기본 960/max 는 타일(장변 2000px)을 절반 이하로
     # 축소해 fine-print 를 깨뜨린다 (2026-07-17 실측: 올원 유의사항 완전 복구).
-    paddlex_text_det_limit_side_len: int = 2500
-    paddlex_text_det_limit_type: str = "max"
+    paddlex_text_det_limit_side_len: int | str = os.environ.get(
+        "PADDLEX_TEXT_DET_LIMIT_SIDE_LEN", "2500"
+    )
+    paddlex_text_det_limit_type: str = os.environ.get(
+        "PADDLEX_TEXT_DET_LIMIT_TYPE", "max"
+    )
     # 기본 "large" 는 겹침 박스를 큰 쪽으로 흡수 — 사진형 카드 콜라주(003 p1)가
     # 통짜 1블록이 된 원인. "small" 로 카드별 하위 블록 유지 (3→20블록 실측).
     # A/B 실험에서 코드 자체를 바꾸지 않고 large/small을 갈라 실행할 수 있게 한다.
@@ -143,6 +156,37 @@ class Settings:
     # 거꾸로 인식('링이어니을용은' 사건, 2026-07-17 실측). 디지털 캡처/정방향
     # 렌더 입력에는 회전이 없으므로 비활성화.
     paddlex_use_textline_orientation: bool = False
+
+    # ── 실험용 서빙 파라미터 (전부 기본 "server" = 요청에서 키를 뺀다) ──────────
+    # PaddleX 3.6 서빙 스키마(`schemas/pp_structurev3.py` InferRequest)가 받는 필드 중
+    # 우리가 그동안 한 번도 안 보내던 것들이다. 기본값이 "server" 이므로 이 필드를
+    # 추가해도 요청 본문은 예전과 동일하다 — 실험에서 환경변수로만 켠다.
+    #
+    # 주의. dict(클래스별 값)는 여기서 다루지 않는다. HTTP JSON 은 key 가 문자열이 되고
+    # predictor 는 정수 cls_id 와 비교하므로 매칭되지 않는다(프로브 실측: 존재하지 않는
+    # 키 "999" 와 실제 클래스 "2" 가 동일 결과). 클래스별 제어는 서버 YAML 의 정수 key 로만
+    # 유효하다.
+    paddlex_layout_nms: str | bool = os.environ.get("PADDLEX_LAYOUT_NMS", "server")
+    paddlex_use_region_detection: str | bool = os.environ.get(
+        "PADDLEX_USE_REGION_DETECTION", "server"
+    )
+    paddlex_use_table_recognition: str | bool = os.environ.get(
+        "PADDLEX_USE_TABLE_RECOGNITION", "server"
+    )
+    # OCR 검출 3개. 영역만의 축이 아니다 — 줄이 늘고 줄면 Region 조립(미배정 줄 흡수)이
+    # 따라 움직여 경계가 바뀐다. 영역 수만 보고 판단하면 안 된다.
+    paddlex_text_det_thresh: str | float = os.environ.get(
+        "PADDLEX_TEXT_DET_THRESH", "server"
+    )
+    paddlex_text_det_box_thresh: str | float = os.environ.get(
+        "PADDLEX_TEXT_DET_BOX_THRESH", "server"
+    )
+    paddlex_text_det_unclip_ratio: str | float = os.environ.get(
+        "PADDLEX_TEXT_DET_UNCLIP_RATIO", "server"
+    )
+    paddlex_text_rec_score_thresh: str | float = os.environ.get(
+        "PADDLEX_TEXT_REC_SCORE_THRESH", "server"
+    )
 
     # ── OCR 라인 병합/중복 제거 ──────────────────────────────────
     dedupe_iou: float = 0.5

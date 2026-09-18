@@ -155,6 +155,35 @@ experiments/layout-labeling/tasks/runs/spark-1118-base/label-studio-import.json
 예측 박스는 `predictions`로 들어간다. 원본을 기준으로 경계를 수정해 정답 annotation으로 확정한다.
 NH 상품 패널·혜택·CTA 관계는 별도의 NH 구조 프로젝트에서 사람이 라벨링한다.
 
+## 5.4 설정을 바꿔가며 두 층을 비교할 때
+
+`tools/run_layout_preview.py`는 최종 Region 한 층만 보여준다. 설정을 바꿔가며 원인을 가르려면
+`tools/run_layout_experiment.py`를 쓴다. 같은 이미지 위에 prediction을 두 벌 올린다.
+
+| prediction | 무엇 | 나쁘면 원인 |
+| --- | --- | --- |
+| `<run> 1-paddlex` | PaddleX `layout_det_res`를 페이지 좌표로 되돌리고 타일 중복만 제거한 박스 | 서버 설정·모델 |
+| `<run> 2-nh-region` | 최종 NH Region | 타일·dedupe·OCR 줄 귀속·Region 조립 |
+
+```powershell
+# 파일 여러 개 또는 폴더를 준다. import 파일 하나로 합쳐진다.
+uv run python tools/run_layout_experiment.py --run-name types-base `
+  --input "samples/spark1118-sample"
+
+uv run python tools/run_layout_experiment.py --run-name tbl-off `
+  --input "samples/spark1118-sample" `
+  --table-recognition false --compare-with types-base
+```
+
+지정하지 않은 PaddleX 옵션은 전부 `server`다. 요청에서 그 키를 빼 서버 YAML 값을 그대로
+쓴다는 뜻이며, 스칼라를 하나라도 보내면 서버 YAML의 클래스별 dict가 통째로 무력화된다.
+`--tile-height`, `--tile-overlap`, `--render-dpi`는 서버를 건드리지 않는 클라이언트 축이다.
+
+산출물은 `tasks/runs/<run-name>/`에 생기고 전부 Git ignore 대상이다. `run.json`에 이번 실행이
+실제로 보낸 요청 본문과 두 층의 개수·라벨 분포가 남으므로, 나중에 무엇을 바꿨는지 기억에
+의존하지 않아도 된다. 선택지 전수와 "이렇게 되면 좋겠다 → 어떤 손잡이"는
+`docs/OCR-최적화-테스트-선택지.md`에 있다.
+
 ## 6. 데이터 원칙
 
 - PDF는 현재 파이프라인과 같은 렌더링 분기로 PNG를 만든다. Label Studio에서 보이는 픽셀과

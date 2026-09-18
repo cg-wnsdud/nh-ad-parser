@@ -261,31 +261,77 @@ def _layout_option(value):
     return value
 
 
-def request_layout_parsing(image: Image.Image) -> PaddleXPageResult:
+def _bool_option(value):
+    """`"server"` 센티널을 공유하는 bool 옵션. 환경변수는 항상 문자열로 온다."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if not text or text == "server":
+        return None
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"bool 옵션을 해석할 수 없다: {value!r} — true/false 또는 'server'")
+
+
+def _int_option(value):
+    option = _layout_option(value)
+    return None if option is None else int(option)
+
+
+def build_request_payload(image: Image.Image) -> dict:
+    """서버에 보낼 본문을 만든다. 파일 바이트는 호출자가 채운다.
+
+    **`"server"` 규약**: 값이 `"server"`(또는 빈 문자열)이면 그 키를 **아예 안 보낸다**.
+    그래야 서버 `PP-StructureV3.yml` 의 값이 그대로 적용된다. 클래스별 dict 처럼 HTTP 로는
+    전달이 안 되는 설정을 쓰려면 반드시 이 상태여야 한다 — 스칼라를 하나라도 보내면
+    그 클래스별 dict 가 통째로 무력화된다.
+    """
     payload = {
-        "file": base64.b64encode(_encode_jpeg(image)).decode("ascii"),
         "fileType": 1,
         "useDocOrientationClassify": False,
         "useDocUnwarping": False,
         # 공식 predict 파라미터의 camelCase 전달 (실서버 동작 검증: 2026-07-17)
-        "textDetLimitSideLen": SETTINGS.paddlex_text_det_limit_side_len,
-        "textDetLimitType": SETTINGS.paddlex_text_det_limit_type,
         "useFormulaRecognition": SETTINGS.paddlex_use_formula_recognition,
         "useTextlineOrientation": SETTINGS.paddlex_use_textline_orientation,
     }
-    # "server" 는 이 키를 **아예 안 보낸다**는 뜻이다. 그래야 서버 PP-StructureV3.yml
-    # 의 값이 그대로 적용된다 — 우리 값과 서버 기본값을 대조할 때만 쓴다. 서버 설정을
-    # 바꾸는 것이 아니라 우리 요청에서 이 항목을 비우는 것뿐이다.
+    side_len = _int_option(SETTINGS.paddlex_text_det_limit_side_len)
+    if side_len is not None:
+        payload["textDetLimitSideLen"] = side_len
+    if str(SETTINGS.paddlex_text_det_limit_type).strip().lower() not in ("", "server"):
+        payload["textDetLimitType"] = SETTINGS.paddlex_text_det_limit_type
     if SETTINGS.paddlex_layout_merge_bboxes_mode not in ("", "server"):
         payload["layoutMergeBboxesMode"] = SETTINGS.paddlex_layout_merge_bboxes_mode
-    # 같은 규약의 레이아웃 후처리 두 항목 (기본 "server" = 키를 안 보냄)
+    # 같은 규약의 수치 옵션 (기본 "server" = 키를 안 보냄)
     for key, raw in (
         ("layoutThreshold", SETTINGS.paddlex_layout_threshold),
         ("layoutUnclipRatio", SETTINGS.paddlex_layout_unclip_ratio),
+        ("textDetThresh", SETTINGS.paddlex_text_det_thresh),
+        ("textDetBoxThresh", SETTINGS.paddlex_text_det_box_thresh),
+        ("textDetUnclipRatio", SETTINGS.paddlex_text_det_unclip_ratio),
+        ("textRecScoreThresh", SETTINGS.paddlex_text_rec_score_thresh),
     ):
         option = _layout_option(raw)
         if option is not None:
             payload[key] = option
+    # 같은 규약의 bool 옵션
+    for key, raw in (
+        ("layoutNms", SETTINGS.paddlex_layout_nms),
+        ("useRegionDetection", SETTINGS.paddlex_use_region_detection),
+        ("useTableRecognition", SETTINGS.paddlex_use_table_recognition),
+    ):
+        option = _bool_option(raw)
+        if option is not None:
+            payload[key] = option
+    return payload
+
+
+def request_layout_parsing(image: Image.Image) -> PaddleXPageResult:
+    payload = build_request_payload(image)
+    payload["file"] = base64.b64encode(_encode_jpeg(image)).decode("ascii")
     resp = requests.post(SETTINGS.paddlex_url, json=payload, timeout=SETTINGS.paddlex_timeout_s)
     resp.raise_for_status()
     body = resp.json()

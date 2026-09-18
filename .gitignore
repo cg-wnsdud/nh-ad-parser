@@ -31,6 +31,7 @@ docs/스파크-PaddleOCR-서빙-현재까지-통합학습.md
 docs/spark-서빙-구성-확정.md
 docs/PP-StructureV3-영역분할-검증보고서-*.md
 docs/농협-광고-영역분할-전용모델-검토.md
+docs/OCR-최적화-테스트-선택지.md
 
 # fc87 조사 때 만든 일회성 전체 수집기. 출력 파일을 server에 만들고 과거 /data 경로를
 # 전제로 하므로 제품 도구로 추적하지 않는다. 재조회는 stdout 전용 inspect script 사용.
@@ -71,3 +72,10 @@ build/
 .vscode/
 .idea/
 .DS_Store
+
+# ocr-lab 실행 산출물 (원본 응답·오버레이·LS task). 고객 문구와 좌표가 들어 있다.
+experiments/ocr-lab/runs/
+experiments/ocr-lab/matrices/
+
+# parser-v2 로컬 실행 산출물. OCR/VLM 원응답과 고객 문구·좌표가 들어간다.
+experiments/parser-v2/outputs/
