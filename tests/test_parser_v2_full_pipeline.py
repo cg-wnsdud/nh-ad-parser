@@ -42,22 +42,24 @@ def test_recovery_candidates_keep_exact_line_union_and_separate_rows():
 
 
 def test_semantic_validation_fills_missing_ids_without_inventing_bbox():
-    result = semantic.validate_decisions(
+    result = semantic.validate_ownership(
         {
             "analysis": "판정",
             "products": [],
             "region_decisions": [],
             "recovery_decisions": [],
+            "table_areas": [],
             "missing_visible_text": [],
         },
         ["p1_r001"],
         ["p1_x001"],
-        ["대출대상"],
     )
 
     assert result["region_decisions"][0]["region_id"] == "p1_r001"
     assert result["region_decisions"][0]["product_id"] == "unknown"
     assert result["recovery_decisions"][0]["action"] == "needs_review"
+    # 소유권 단계는 라벨을 만들지 않는다. 라벨은 상품 템플릿이 정해진 뒤에 붙는다.
+    assert "label" not in result["region_decisions"][0]
 
 
 def test_p3_preserves_region_and_unassigned_bboxes_for_highlighting():
@@ -142,14 +144,14 @@ def test_decorative_vlm_decision_never_deletes_ocr_text_or_bbox():
             "action": "decorative",
             "target_region_id": "",
             "product_id": "product_1",
-            "label": None,
             "confidence": 1.0,
             "reason": "table header",
         }],
+        "table_areas": [],
         "missing_visible_text": [],
     }
 
-    full_pipeline._apply_semantics(page, result)
+    full_pipeline._apply_ownership(page, result)
 
     assert page["unassigned_lines"] == []
     assert page["regions"][0]["text"] == "보장금액"

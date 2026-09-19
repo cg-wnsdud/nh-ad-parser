@@ -46,6 +46,8 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
     all_refs: list[str] = []
     region_count = 0
 
+    product_templates = evidence.get("product_templates") or {}
+
     for page in evidence.get("pages") or []:
         page_no = int(page["page_no"])
         canvas = list(page["canvas"])
@@ -66,6 +68,9 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
                 "scope": {
                     "page_no": page_no,
                     "product_id": region.get("product_id"),
+                    "template_id": (
+                        product_templates.get(str(region.get("product_id")), {})
+                    ).get("template_id"),
                 },
                 "bbox": copy.deepcopy(region.get("bbox")),
                 "canvas": canvas,
@@ -170,6 +175,10 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
             key: copy.deepcopy(evidence.get(key))
             for key in ("doc_id", "source_file", "file_type", "classification", "template")
         },
+        # 상품이 섞인 문서는 템플릿이 여럿이다. 심의는 `review_units`의 단위로
+        # 돌리고, 각 단위의 허용 라벨은 그 상품의 템플릿에서 온다.
+        "product_templates": copy.deepcopy(evidence.get("product_templates") or {}),
+        "review_units": copy.deepcopy(evidence.get("review_units") or []),
         "pages": pages_out,
         "label_index": [
             {"label": label, "references": references}

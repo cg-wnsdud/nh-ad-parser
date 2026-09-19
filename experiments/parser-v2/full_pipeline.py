@@ -12,12 +12,12 @@ from urllib.parse import unquote
 from PIL import Image
 
 from nh_parser.review.catalog import load_catalog
-from nh_parser.review.resolution import resolve_template
 from nh_parser.vlm import client as vlm_client
 
 from export_v2 import build_p1, build_p3
 from recovery import build_recovery_candidates
-from semantic import analyze_page_context
+from semantic import analyze_page_context, analyze_product_labels
+from templates import PAGE_COMMON, resolve_product_templates, review_units
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -50,6 +50,42 @@ def _prepare_page(page: dict[str, Any]) -> dict[str, Any]:
         prepared.get("unassigned_lines") or [], page_no=page_no,
     )
     return prepared
+
+
+def _document_template(product_templates: dict[str, Any]) -> dict[str, Any]:
+    """문서 단위 요약. 상품이 하나면 그 템플릿, 여럿이면 목록을 남긴다.
+
+    P3의 `document.template`은 기존 계약이라 유지하되, 상품이 섞인 문서에서
+    임의로 하나를 고르지 않는다. 실제 판정 근거는 `product_templates`다.
+    """
+    products = {
+        product_id: resolution
+        for product_id, resolution in product_templates.items()
+        if product_id != PAGE_COMMON
+    }
+    ids = sorted({
+        str(resolution.get("template_id"))
+        for resolution in products.values()
+        if resolution.get("template_id")
+    })
+    if len(ids) == 1:
+        only = next(
+            resolution for resolution in products.values()
+            if resolution.get("template_id") == ids[0]
+        )
+        return {**only, "scope": "document"}
+    return {
+        "template_id": None,
+        "status": "multi_product" if ids else "unresolved",
+        "source": "per_product",
+        "confidence": None,
+        "reason": (
+            f"상품별 템플릿 {len(ids)}종: {', '.join(ids)}" if ids
+            else "상품별 템플릿을 확정하지 못함"
+        ),
+        "candidates": ids,
+        "scope": "per_product",
+    }
 
 
 def _assign_reading_order(page: dict[str, Any]) -> None:
@@ -88,14 +124,15 @@ def _assign_reading_order(page: dict[str, Any]) -> None:
     page["regions"] = ordered
 
 
-def _apply_semantics(
+def _apply_ownership(
     page: dict[str, Any], result: dict[str, Any],
 ) -> None:
+    """1단계 결과를 적용한다. 라벨은 상품별 템플릿이 정해진 뒤 2단계에서 붙인다."""
     by_region = {item["region_id"]: item for item in result["region_decisions"]}
     for region in page.get("regions") or []:
         decision = by_region[region["region_id"]]
         region["product_id"] = decision["product_id"]
-        region["semantic_label"] = decision.get("label")
+        region["semantic_label"] = None
         region["needs_split"] = bool(decision.get("needs_split"))
         region["needs_review"] = bool(
             decision.get("confidence", 0.0) < 0.7 or decision.get("product_id") == "unknown"
@@ -134,7 +171,7 @@ def _apply_semantics(
             "product_id": (
                 "page_common" if decision["action"] == "page_common" else decision["product_id"]
             ),
-            "semantic_label": decision.get("label"),
+            "semantic_label": None,
             "needs_split": False,
             "needs_review": bool(
                 decision["action"] in {"needs_review", "decorative"}
@@ -160,8 +197,63 @@ def _apply_semantics(
     ]
     page["semantic_analysis"] = result.get("analysis")
     page["products"] = result.get("products") or []
+    page["table_areas"] = copy.deepcopy(result.get("table_areas") or [])
     page["semantic_bands"] = copy.deepcopy(result.get("semantic_bands") or [])
     _assign_reading_order(page)
+
+
+def _label_pages(
+    pages: list[dict[str, Any]],
+    product_templates: dict[str, dict[str, Any]],
+    images: dict[int, Image.Image],
+) -> None:
+    """상품별로 나눠 라벨링한다.
+
+    한 요청에 두 상품의 구분값을 함께 넣으면 모델이 상품1 Region에 템플릿B의
+    구분값을 붙일 수 있다. enum은 둘 다 허용 목록에 있으니 막아주지 못한다.
+    """
+    for page in pages:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for region in page.get("regions") or []:
+            groups.setdefault(str(region.get("product_id") or "unknown"), []).append(region)
+
+        notes = []
+        for product_id, regions in groups.items():
+            resolution = product_templates.get(product_id) or {}
+            labels = list(resolution.get("labels") or [])
+            if not labels:
+                # 템플릿을 확정하지 못한 상품은 라벨을 억지로 붙이지 않고 남긴다.
+                for region in regions:
+                    region["semantic_label"] = None
+                    region["needs_review"] = True
+                    region["label_decision"] = {
+                        "region_id": region["region_id"],
+                        "label": None,
+                        "needs_split": False,
+                        "confidence": 0.0,
+                        "reason": f"{product_id} 템플릿 미확정으로 라벨링 보류",
+                    }
+                continue
+            result = analyze_product_labels(
+                images[int(page["page_no"])],
+                page,
+                regions,
+                product_id=product_id,
+                product_name=resolution.get("product_name"),
+                template_id=resolution.get("template_id"),
+                labels=labels,
+            )
+            notes.append(result.get("analysis") or "")
+            by_region = {item["region_id"]: item for item in result["region_labels"]}
+            for region in regions:
+                decision = by_region[str(region["region_id"])]
+                region["semantic_label"] = decision["label"]
+                region["label_decision"] = decision
+                if decision["needs_split"]:
+                    region["needs_split"] = True
+                if decision["label"] is None or decision["confidence"] < 0.7:
+                    region["needs_review"] = True
+        page["label_analysis"] = "\n".join(value for value in notes if value)
 
 
 def _append_p3_label_studio(
@@ -239,12 +331,15 @@ def _write_stage_views(documents: list[dict[str, Any]], out: Path) -> None:
     for document in documents:
         ownership.append({
             "source_file": document["source_file"],
+            "product_templates": copy.deepcopy(document.get("product_templates") or {}),
+            "review_units": copy.deepcopy(document.get("review_units") or []),
             "pages": [{
                 "page_no": page["page_no"],
                 "products": copy.deepcopy(page.get("products") or []),
                 "regions": [{
                     "region_id": region["region_id"],
                     "product_id": region.get("product_id"),
+                    "label": region.get("semantic_label"),
                     "reading_order": region.get("reading_order"),
                     "product_reading_order": region.get("product_reading_order"),
                     "related_region_id": region.get("related_region_id"),
@@ -255,15 +350,23 @@ def _write_stage_views(documents: list[dict[str, Any]], out: Path) -> None:
             "source_file": document["source_file"],
             "classification": copy.deepcopy(document.get("classification")),
             "template": copy.deepcopy(document.get("template")),
+            "product_templates": copy.deepcopy(document.get("product_templates") or {}),
             "pages": [{
                 "page_no": page["page_no"],
                 "status": page.get("semantic_status"),
                 "analysis": page.get("semantic_analysis"),
+                "label_analysis": page.get("label_analysis"),
+                "table_areas": copy.deepcopy(page.get("table_areas") or []),
                 "semantic_bands": copy.deepcopy(page.get("semantic_bands") or []),
                 "region_decisions": [
                     copy.deepcopy(region.get("semantic_decision"))
                     for region in page.get("regions") or []
                     if region.get("semantic_decision")
+                ],
+                "label_decisions": [
+                    copy.deepcopy(region.get("label_decision"))
+                    for region in page.get("regions") or []
+                    if region.get("label_decision")
                 ],
                 "recovery_decisions": [
                     copy.deepcopy(candidate.get("decision"))
@@ -310,31 +413,28 @@ def run_full_pipeline(
             "classification": asdict(classification),
             "pages": pages,
         }
-        resolution = resolve_template(doc, catalog)
-        doc["template"] = resolution
-        template_id = resolution.get("template_id")
-        labels = (
-            [item["gubun"] for item in catalog["templates"][template_id]["items"]]
-            if template_id else []
-        )
-        if not template_id:
-            for page in pages:
-                page["semantic_status"] = "skipped_template_unresolved"
-                for region in page["regions"]:
-                    region.update({
-                        "product_id": "unknown", "semantic_label": None,
-                        "needs_review": True, "needs_split": False,
-                    })
-                _assign_reading_order(page)
-        else:
-            for page in pages:
-                image = Image.open(media[(source_file, int(page["page_no"]))]).convert("RGB")
-                result = analyze_page_context(
-                    image, page, page["recovery_candidates"],
-                    template_id=template_id, labels=labels,
-                )
-                _apply_semantics(page, result)
-                page["semantic_status"] = "complete"
+        # 1단계 — 상품 소유권. 템플릿을 아직 모르므로 라벨은 붙이지 않는다.
+        images = {
+            int(page["page_no"]): Image.open(
+                media[(source_file, int(page["page_no"]))]
+            ).convert("RGB")
+            for page in pages
+        }
+        for page in pages:
+            result = analyze_page_context(
+                images[int(page["page_no"])], page, page["recovery_candidates"],
+            )
+            _apply_ownership(page, result)
+            page["semantic_status"] = "complete"
+
+        # 2단계 — 상품별 템플릿. 소유권이 나와야 상품군을 알 수 있으므로 여기서 푼다.
+        product_templates = resolve_product_templates(doc, catalog)
+        doc["product_templates"] = product_templates
+        doc["template"] = _document_template(product_templates)
+
+        # 3단계 — 상품별 라벨링.
+        _label_pages(pages, product_templates, images)
+        doc["review_units"] = review_units(pages, product_templates)
 
         p1 = build_p1(doc)
         p3 = build_p3(p1)

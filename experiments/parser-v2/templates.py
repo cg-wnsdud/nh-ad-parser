@@ -1,0 +1,199 @@
+"""상품별 템플릿 결정.
+
+한 파일에 상품이 여럿이면 상품마다 따르는 광고 템플릿이 다르다. 문서 하나에
+템플릿 하나를 쓰면 `4. 카드상품.pdf` 안의 예금 상품에는 맞는 구분값이 아예 없다.
+
+`resolve_template`은 `product_group`, `product_name_shown`, 그리고 Region의 줄
+텍스트만 본다. Region을 `product_id`로 걸러 같은 함수에 다시 넣으면 상품별
+판정이 그대로 된다 — 새 판정기를 만들지 않는다.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from nh_parser.review.resolution import resolve_template
+
+PAGE_COMMON = "page_common"
+UNKNOWN = "unknown"
+
+
+def common_gubun(catalog: dict[str, Any]) -> list[str]:
+    """19개 템플릿 **전부**에 들어 있는 구분값.
+
+    페이지 공통 영역(회사명·유의사항·심의번호)은 어느 상품에도 속하지 않으므로
+    특정 템플릿의 구분값을 쓸 수 없다. 교집합을 직접 계산해 카탈로그가 바뀌어도
+    따라가게 한다.
+    """
+    templates = catalog.get("templates") or {}
+    if not templates:
+        return []
+    sets = [{item["gubun"] for item in template["items"]} for template in templates.values()]
+    shared = set.intersection(*sets)
+    # 프롬프트가 실행마다 흔들리지 않도록 카탈로그 정의 순서를 유지한다.
+    first = next(iter(templates.values()))
+    return [item["gubun"] for item in first["items"] if item["gubun"] in shared]
+
+
+def template_labels(catalog: dict[str, Any], template_id: str | None) -> list[str]:
+    if not template_id:
+        return []
+    template = (catalog.get("templates") or {}).get(template_id)
+    if not template:
+        return []
+    return [item["gubun"] for item in template["items"]]
+
+
+def _product_meta(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """페이지 소유권 판정이 돌려준 상품 정보를 product_id로 모은다."""
+    output: dict[str, dict[str, Any]] = {}
+    for page in doc.get("pages") or []:
+        for product in page.get("products") or []:
+            product_id = str(product.get("product_id") or "")
+            if product_id and product_id not in output:
+                output[product_id] = product
+    return output
+
+
+def _regions_by_product(doc: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """문서 전체에서 상품별 Region을 모은다.
+
+    같은 `product_1`이 여러 페이지에 걸쳐 있어도 템플릿은 하나여야 하므로
+    페이지가 아니라 문서 단위로 모은다.
+    """
+    output: dict[str, list[dict[str, Any]]] = {}
+    for page in doc.get("pages") or []:
+        for region in page.get("regions") or []:
+            product_id = str(region.get("product_id") or UNKNOWN)
+            output.setdefault(product_id, []).append(region)
+    return output
+
+
+def _clean(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text or text == "판단불가":
+        return None
+    return text
+
+
+def _per_product_value(
+    field: str, meta: dict[str, dict[str, Any]], doc_value: str | None,
+) -> dict[str, str | None]:
+    """상품별 값은 **상품끼리 갈릴 때만** 쓰고, 그 외에는 문서 분류를 따른다.
+
+    문서 분류기(`vlm.client.classify`)는 이 판정 하나만 보는 전용 프롬프트라
+    더 정확하다. 소유권 판정은 한 응답에서 다섯 가지를 동시에 하므로 이런
+    세부 항목에서 틀리기 쉽다.
+
+    실측(2026-09-19, `14. 대출성상품.pdf`): 문서 분류는 `product_name_shown=노출`,
+    소유권 판정은 `미노출`이었다. 광고에 `NH대한민국 어디든대출`이라는 상품명이
+    실제로 적혀 있으므로 문서 분류가 맞았다. 상품별 값을 무조건 우선하면
+    템플릿이 `상품명 미노출`로 바뀌어 구분값이 12개에서 3개로 줄어든다.
+    """
+    values = {_clean(product.get(field)) for product in meta.values()}
+    values.discard(None)
+    if len(values) <= 1 and doc_value:
+        return {product_id: doc_value for product_id in meta}
+    return {
+        product_id: _clean(product.get(field)) or doc_value
+        for product_id, product in meta.items()
+    }
+
+
+def resolve_product_templates(
+    doc: dict[str, Any], catalog: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """상품마다 템플릿과 허용 라벨을 정한다.
+
+    `product_group`을 **반드시** 채워 넣는다. 비워두면 `resolve_template`이
+    `_infer_group`으로 내려가 **파일명을 먼저** 보기 때문에, `4. 카드상품.pdf`
+    안의 예금 상품도 "카드"로 추론된다. 그래서 소유권 판정이 상품별 상품군과
+    상품명 노출 여부를 함께 돌려주고 그 값을 여기서 그대로 쓴다.
+    """
+    meta = _product_meta(doc)
+    shared = common_gubun(catalog)
+    doc_group = _clean(doc.get("product_group"))
+    doc_shown = _clean(doc.get("product_name_shown"))
+    group_of = _per_product_value("product_group", meta, doc_group)
+    shown_of = _per_product_value("product_name_shown", meta, doc_shown)
+    output: dict[str, dict[str, Any]] = {}
+
+    for product_id, regions in _regions_by_product(doc).items():
+        if product_id == PAGE_COMMON:
+            output[product_id] = {
+                "template_id": None,
+                "status": "page_common",
+                "source": "catalog_intersection",
+                "confidence": 1.0,
+                "reason": "모든 템플릿에 공통인 구분값만 허용",
+                "candidates": [],
+                "labels": shared,
+                "product_group": None,
+                "product_name_shown": None,
+                "region_count": len(regions),
+            }
+            continue
+
+        product = meta.get(product_id) or {}
+        group = group_of.get(product_id) or doc_group
+        shown = shown_of.get(product_id) or doc_shown
+        product_doc = {
+            "source_file": doc.get("source_file"),
+            "product_group": group,
+            "product_name_shown": shown,
+            # `_document_text`가 Region의 줄을 긁어모으므로 상품 Region만 넘기면
+            # 그 상품의 텍스트만 템플릿 판정 근거가 된다.
+            "pages": [{"regions": regions, "unassigned_lines": []}],
+        }
+        resolution = dict(resolve_template(product_doc, catalog))
+        labels = template_labels(catalog, resolution.get("template_id"))
+        if product_id == UNKNOWN and labels:
+            # 소유권을 확정하지 못한 Region이라 어느 상품 템플릿으로 좁힐 근거가
+            # 없다. 공통 구분값(회사명·유의사항·심의번호)까지 허용해, 소유권
+            # 판정이 unknown으로 흘린 공통 영역이 라벨을 잃지 않게 한다.
+            labels = labels + [gubun for gubun in shared if gubun not in labels]
+        resolution["labels"] = labels
+        resolution["product_group"] = group
+        resolution["product_name_shown"] = shown
+        resolution["product_name"] = product.get("name")
+        resolution["region_count"] = len(regions)
+        output[product_id] = resolution
+
+    return output
+
+
+def review_units(
+    pages: list[dict[str, Any]], product_templates: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """심의 호출 단위를 미리 묶어 P3에 싣는다.
+
+    한 상품을 심의할 때 근거는 그 상품의 Region + 페이지 공통 Region이다.
+    공통 영역(유의사항·심의번호)은 두 상품 모두의 심의 근거이므로 양쪽에
+    중복으로 들어가는 것이 맞다.
+    """
+    common_ids = [
+        str(region["region_id"])
+        for page in pages
+        for region in page.get("regions") or []
+        if str(region.get("product_id")) == PAGE_COMMON
+    ]
+    units = []
+    for product_id, resolution in product_templates.items():
+        if product_id == PAGE_COMMON:
+            continue
+        region_ids = [
+            str(region["region_id"])
+            for page in pages
+            for region in page.get("regions") or []
+            if str(region.get("product_id")) == product_id
+        ]
+        units.append({
+            "unit_id": f"review_{product_id}",
+            "product_id": product_id,
+            "product_name": resolution.get("product_name"),
+            "template_id": resolution.get("template_id"),
+            "template_status": resolution.get("status"),
+            "allowed_labels": list(resolution.get("labels") or []),
+            "region_ids": region_ids,
+            "page_common_region_ids": common_ids,
+        })
+    return units
