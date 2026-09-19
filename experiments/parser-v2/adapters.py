@@ -90,6 +90,9 @@ def build_page_evidence(
     ordered = sorted(
         enumerate(parsing),
         key=lambda pair: (
+            # block_order는 타일마다 다시 1부터 시작한다. 타일 번호가 페이지의 큰 흐름이고
+            # order는 그 타일 안에서만 의미가 있다.
+            pair[1].get("piece") if isinstance(pair[1].get("piece"), int) else 0,
             pair[1].get("order") if isinstance(pair[1].get("order"), int) else 10**9,
             (pair[1].get("bbox") or [0, 0])[1],
             (pair[1].get("bbox") or [0, 0])[0],
@@ -120,6 +123,7 @@ def build_page_evidence(
             },
             "text_selection_status": "pending",
             "text_agreement": None,
+            "lines": [],
             "ocr_evidence": [],
             "digital_evidence": [],
             "content_gap_candidates": [],
@@ -129,15 +133,40 @@ def build_page_evidence(
 
     unassigned: list[dict[str, Any]] = []
 
-    def assign(lines: list[dict[str, Any]], source: str) -> None:
-        start = sum(len(r["ocr_evidence"]) + len(r["digital_evidence"]) for r in regions)
-        start += len(unassigned)
+    def assign_evidence(lines: list[dict[str, Any]], source: str) -> None:
         evidence_key = "digital_evidence" if source == "digital" else "ocr_evidence"
-        prefix = "d" if source == "digital" else "o"
         for offset, raw_line in enumerate(lines):
             line = dict(raw_line)
             line["source"] = source
-            line.setdefault("line_id", f"p{page_no}_{prefix}{start + offset + 1:04d}")
+            line.setdefault("evidence_id", f"p{page_no}_{source[0]}e{offset + 1:04d}")
+            bbox = line.get("bbox")
+            candidates: list[tuple[float, int, dict[str, Any]]] = []
+            if bbox:
+                for region in regions:
+                    ratio = line_overlap_ratio(bbox, region["bbox"])
+                    if ratio >= min_overlap:
+                        candidates.append((ratio, -_area(region["bbox"]), region))
+            if not candidates:
+                continue
+            target = max(candidates, key=lambda item: (item[0], item[1]))[2]
+            target[evidence_key].append(line)
+
+    def canonical_lines() -> list[dict[str, Any]]:
+        """PDF 디지털 줄을 우선하고, 덮이지 않은 OCR 줄만 보충한다."""
+        digital = [{**line, "source": "digital"} for line in (digital_lines or [])]
+        ocr = [{**line, "source": "ocr"} for line in ocr_lines]
+        merged = list(digital)
+        for line in ocr:
+            if _line_is_covered(line, digital):
+                continue
+            merged.append(line)
+        merged.sort(key=_reading_key)
+        for index, line in enumerate(merged, start=1):
+            line["line_id"] = f"p{page_no}_l{index:04d}"
+        return merged
+
+    def assign_canonical(lines: list[dict[str, Any]]) -> None:
+        for line in lines:
             bbox = line.get("bbox")
             candidates: list[tuple[float, int, dict[str, Any]]] = []
             if bbox:
@@ -148,11 +177,12 @@ def build_page_evidence(
             if not candidates:
                 unassigned.append(line)
                 continue
-            target = max(candidates, key=lambda item: (item[0], item[1]))[2]
-            target[evidence_key].append(line)
+            max(candidates, key=lambda item: (item[0], item[1]))[2]["lines"].append(line)
 
-    assign(list(digital_lines or []), "digital")
-    assign(ocr_lines, "ocr")
+    assign_evidence(list(digital_lines or []), "digital")
+    assign_evidence(ocr_lines, "ocr")
+    canonical_stream = canonical_lines()
+    assign_canonical(canonical_stream)
 
     fallback_regions = 0
     conflict_regions = 0
@@ -160,19 +190,13 @@ def build_page_evidence(
     for region in regions:
         ocr_evidence = sorted(region["ocr_evidence"], key=_reading_key)
         digital_evidence = sorted(region["digital_evidence"], key=_reading_key)
+        owned_lines = sorted(region["lines"], key=_reading_key)
         region["ocr_evidence"] = ocr_evidence
         region["digital_evidence"] = digital_evidence
-        # 디지털 PDF 글자를 우선하고, 디지털 박스가 덮지 못한 OCR 줄만 보충한다.
-        # 기존 파이프라인의 digital+OCR 병합 원칙을 Region 안에서 재현한다.
-        line_evidence = sorted(
-            digital_evidence + [
-                line for line in ocr_evidence if not _line_is_covered(line, digital_evidence)
-            ],
-            key=_reading_key,
-        )
+        region["lines"] = owned_lines
         line_text = "\n".join(
                 str(line.get("text") or "").strip()
-                for line in line_evidence
+                for line in owned_lines
                 if str(line.get("text") or "").strip()
             )
         region["text_candidates"]["line_assembled"] = line_text or None
@@ -181,7 +205,7 @@ def build_page_evidence(
             agreement = SequenceMatcher(None, _normalized(block_text), _normalized(line_text)).ratio()
             region["text_agreement"] = round(agreement, 4)
             # 디지털 텍스트는 OCR보다 문자 정확도가 높아 기존 파이프라인도 정본으로 썼다.
-            if digital_evidence:
+            if any(line.get("source") == "digital" for line in owned_lines):
                 region["text"] = line_text
                 region["text_source"] = "digital_ocr_lines"
             else:
@@ -201,7 +225,8 @@ def build_page_evidence(
             region["text_selection_status"] = "paddlex_only"
         elif line_text:
             region["text"] = line_text
-            region["text_source"] = "digital_ocr_fallback" if digital_evidence else "ocr_fallback"
+            has_digital = any(line.get("source") == "digital" for line in owned_lines)
+            region["text_source"] = "digital_ocr_fallback" if has_digital else "ocr_fallback"
             region["text_selection_status"] = "line_fallback"
             fallback_regions += int(bool(region["text"]))
         else:
@@ -210,11 +235,11 @@ def build_page_evidence(
             region["text_selection_status"] = "empty"
 
         if block_text:
-            canonical = _normalized(region["text"])
+            normalized_selected = _normalized(region["text"])
             gaps = [
-                line for line in ocr_evidence
+                line for line in owned_lines
                 if len(_normalized(line.get("text"))) >= 2
-                and _normalized(line.get("text")) not in canonical
+                and _normalized(line.get("text")) not in normalized_selected
             ]
             region["content_gap_candidates"] = gaps
             gap_candidates += len(gaps)
@@ -223,11 +248,11 @@ def build_page_evidence(
     owned_ids = [
         line["line_id"]
         for region in regions
-        for line in region["ocr_evidence"] + region["digital_evidence"]
+        for line in region["lines"]
     ]
     unassigned_ids = [line["line_id"] for line in unassigned]
     all_ids = owned_ids + unassigned_ids
-    expected = len(ocr_lines) + len(digital_lines or [])
+    expected = len(canonical_stream)
     if len(all_ids) != len(set(all_ids)) or len(all_ids) != expected:
         raise ValueError("OCR/디지털 줄 소유권 보존 조건이 깨졌습니다")
 
@@ -245,6 +270,7 @@ def build_page_evidence(
             "empty_regions": sum(r["text_source"] == "empty" for r in regions),
             "ocr_lines": len(ocr_lines),
             "digital_lines": len(digital_lines or []),
+            "canonical_lines": len(canonical_stream),
             "unassigned_lines": len(unassigned),
             "content_gap_candidates": gap_candidates,
             "text_conflicts_pending_vlm": conflict_regions,
@@ -253,19 +279,36 @@ def build_page_evidence(
 
 
 def dedupe_ocr_lines(lines: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
-    """서로 다른 타일에서 반복된 *같은 문자열* OCR 줄만 합친다."""
+    """서로 다른 타일에서 같은 위치를 다시 읽은 OCR 줄을 합친다.
+
+    타일 경계에서는 같은 글자가 일부 잘려 문자열이 달라질 수 있다. 문자열 일치보다
+    박스 IoU/포함비를 사용하고, 신뢰도가 높은 판독을 남기되 버린 판독은
+    ``tile_alternates``에 보존한다.
+    """
+    def iou(a: list[int], b: list[int]) -> float:
+        ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        inter = ix * iy
+        return inter / max(1, _area(a) + _area(b) - inter)
+
+    def containment(a: list[int], b: list[int]) -> float:
+        ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        return (ix * iy) / max(1, min(_area(a), _area(b)))
+
     kept: list[dict[str, Any]] = []
     merged = 0
-    for line in lines:
+    for line in sorted(lines, key=lambda item: -(item.get("score") or 0.0)):
         for other in kept:
             if other.get("piece") == line.get("piece"):
                 continue
-            if _normalized(other.get("text")) != _normalized(line.get("text")):
+            if iou(line["bbox"], other["bbox"]) < 0.5 and containment(
+                line["bbox"], other["bbox"]
+            ) < 0.7:
                 continue
-            if line_overlap_ratio(line["bbox"], other["bbox"]) < 0.5:
-                continue
-            if line_overlap_ratio(other["bbox"], line["bbox"]) < 0.5:
-                continue
+            other.setdefault("tile_alternates", []).append({
+                key: line.get(key) for key in ("text", "score", "bbox", "piece")
+            })
             merged += 1
             break
         else:
