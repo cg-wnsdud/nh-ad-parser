@@ -85,8 +85,12 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
                     if region.get("needs_review") or region.get("needs_split")
                     else "parser_v2_selected"
                 ),
+                # 소유권 판정은 행별 사유를 더 이상 받지 않는다(응답 길이 때문).
+                # 검수자가 실제로 궁금한 것은 "왜 이 라벨인가"이므로 라벨 판정의
+                # 사유를 먼저 쓰고, 없을 때만 소유권 쪽 보충 사유를 쓴다.
                 "selection_reason": (
-                    (region.get("semantic_decision") or {}).get("reason")
+                    (region.get("label_decision") or {}).get("reason")
+                    or (region.get("semantic_decision") or {}).get("reason")
                 ),
                 "label": region.get("semantic_label"),
                 "labels": ([{
@@ -100,6 +104,11 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
                 "needs_split": bool(region.get("needs_split")),
                 "related_region_id": region.get("related_region_id"),
                 "origin": region.get("origin") or "paddlex",
+                # 표는 행·열 구조를 살려 보낸다. 셀의 좌표와 문구는 OCR 줄에서
+                # 그대로 왔고 VLM은 배치만 했다.
+                "kind": region.get("kind") or "text",
+                "table": copy.deepcopy(region.get("table")),
+                "table_status": region.get("table_status"),
                 "reading_order": region.get("reading_order"),
                 "product_reading_order": region.get("product_reading_order"),
                 "vlm_excluded": bool(region.get("vlm_excluded")),
@@ -200,6 +209,10 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
         },
         "summary": {
             "region_count": region_count,
+            "table_region_count": sum(
+                1 for page in pages_out for region in page["regions"]
+                if region.get("table")
+            ),
             "label_count": len(labels),
             "unassigned_line_count": sum(len(page["unassigned_text"]) for page in pages_out),
             "needs_review_region_count": sum(

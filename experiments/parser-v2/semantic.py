@@ -27,8 +27,10 @@ NAME_SHOWN = ["노출", "미노출", "판단불가"]
 ABSTAIN = "해당없음"
 
 # 한 라벨링 요청이 감당할 Region 수. 넘으면 나눠 부른다. 목록이 길어지면 뒤쪽
-# 항목의 정확도가 떨어지고 응답이 잘릴 때 한꺼번에 망가진다.
-LABEL_CHUNK = 40
+# 항목의 정확도가 떨어지고, 응답이 잘리면 그 묶음이 통째로 망가진다.
+# 실측(2026-09-19): 모델이 Region 하나당 약 440자를 쓴다. 43개를 한 번에 물었더니
+# 18,840자에서 잘렸다. 15개면 약 6,600자로 넉넉히 들어간다.
+LABEL_CHUNK = 15
 
 
 def _short_text(value: Any, limit: int = 700) -> str:
@@ -102,6 +104,11 @@ def _ownership_schema(region_ids: list[str], candidate_ids: list[str]) -> dict[s
             },
             "region_decisions": {
                 "type": "array",
+                # 상한이 없으면 모델이 같은 ID를 계속 다시 뱉어 응답이 끝나지 않는다.
+                # 실측(2026-09-19): region_labels 15개짜리 요청이 35,376자까지 늘었다.
+                # 각 ID를 정확히 한 번씩 받는 것이 계약이므로 개수를 고정한다.
+                "minItems": len(region_ids),
+                "maxItems": len(region_ids),
                 "items": {
                     "type": "object",
                     "properties": {
@@ -109,16 +116,19 @@ def _ownership_schema(region_ids: list[str], candidate_ids: list[str]) -> dict[s
                         "product_id": {"type": "string", "enum": PRODUCT_IDS},
                         "needs_split": {"type": "boolean"},
                         "confidence": {"type": "number"},
-                        "reason": {"type": "string"},
+                        # Region마다 자유 서술 reason을 받으면 응답의 대부분이
+                        # 거기에 들어간다. 실측: Region 30개 페이지에서 응답이
+                        # 14,827자까지 늘어 잘렸고, 예산을 키우자 120초 타임아웃이
+                        # 났다. 근거는 analysis 한 곳에 모으고 행마다 두지 않는다.
                     },
-                    "required": [
-                        "region_id", "product_id", "needs_split", "confidence", "reason",
-                    ],
+                    "required": ["region_id", "product_id", "needs_split", "confidence"],
                     "additionalProperties": False,
                 },
             },
             "recovery_decisions": {
                 "type": "array",
+                "minItems": len(candidate_ids),
+                "maxItems": len(candidate_ids),
                 "items": {
                     "type": "object",
                     "properties": {
@@ -230,6 +240,7 @@ def analyze_page_ownership(
 5. missing_visible_text: 이미지에는 분명히 보이지만 REGION/CANDIDATE 목록에 전혀 없는 문구만 적으세요.
 
 중요 규칙:
+- analysis는 세 문장 이내로 쓰세요. 길면 응답이 잘립니다.
 - bbox를 새로 만들지 말고 제공된 ID만 선택하세요(table_areas의 근사 위치는 예외).
 - 다른 상품의 내용을 같은 product_id에 섞지 마세요.
 - 표·고지·상품 설명이라는 PaddleX layout 이름은 힌트일 뿐 정답으로 믿지 마세요.
@@ -249,7 +260,10 @@ def analyze_page_ownership(
         ],
         schema_name="parser_v2_page_ownership",
         schema=_ownership_schema(region_ids, candidate_ids),
-        max_tokens=min(8000, 1200 + 130 * (len(region_ids) + len(candidate_ids))),
+        # 한글은 토큰당 글자 수가 적어 영문 기준 예산으로 잡으면 잘린다. 실측:
+        # `4. 카드상품`(Region 30 + 후보 2)의 응답이 14,827자였고 5,360토큰
+        # 예산에서 잘려 JSON 파싱이 3회 모두 실패했다.
+        max_tokens=min(10000, 1500 + 160 * len(region_ids) + 320 * len(candidate_ids)),
     )
     return validate_ownership(result, region_ids, candidate_ids)
 
@@ -403,6 +417,9 @@ def validate_ownership(
             "confidence": 0.0,
             "reason": "VLM 응답에서 누락되어 검수 필요",
         })
+    for item in region_map.values():
+        # 소유권 스키마에서 행별 reason을 뺐다. 누락 보충분만 사유를 갖는다.
+        item.setdefault("reason", "")
     candidate_map = unique(
         result.get("recovery_decisions") or [], "candidate_id", set(candidate_ids)
     )
@@ -440,7 +457,9 @@ def _label_schema(region_ids: list[str], labels: list[str]) -> dict[str, Any]:
                 "type": "array",
                 # 비어 있는 배열도 스키마상 유효하면 재시도가 걸리지 않는다.
                 # 실측: 모델이 판정을 analysis 문장에만 쓰고 배열을 비워 보냈다.
-                "minItems": 1,
+                # 상한이 없으면 반대로 같은 ID를 반복해 응답이 끝나지 않는다.
+                "minItems": len(region_ids),
+                "maxItems": len(region_ids),
                 "items": {
                     "type": "object",
                     "properties": {
@@ -500,7 +519,7 @@ def analyze_product_labels(
 넣고 주 라벨 **하나**를 고르세요.
 
 - 판정은 반드시 region_labels 배열에 넣으세요. analysis에 문장으로 적으면 무효입니다.
-- analysis에는 전체 요약 한 문장만 쓰세요.
+- analysis에는 전체 요약 한 문장만, 각 reason은 40자 이내로 쓰세요.
 - 허용 라벨 중 맞는 것이 없으면 {ABSTAIN}을 고르세요. 억지로 고르지 마세요.
 - 한 Region에 서로 다른 구분값이 실제로 섞여 있으면 needs_split=true로 표시하고
   둘 중 하나를 임의로 고르지 마세요.
@@ -521,7 +540,7 @@ def analyze_product_labels(
             parts,
             schema_name="parser_v2_product_labels",
             schema=schema,
-            max_tokens=min(8000, 800 + 130 * len(region_ids)),
+            max_tokens=min(12000, 1200 + 500 * len(region_ids)),
         )
         calls += 1
         if not (result.get("region_labels") or []):
@@ -539,7 +558,7 @@ def analyze_product_labels(
                 retry,
                 schema_name="parser_v2_product_labels",
                 schema=schema,
-                max_tokens=min(8000, 800 + 130 * len(region_ids)),
+                max_tokens=min(12000, 1200 + 500 * len(region_ids)),
             )
             calls += 1
         analyses.append(str(result.get("analysis") or ""))

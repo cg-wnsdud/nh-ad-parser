@@ -14,6 +14,7 @@ from PIL import Image
 from nh_parser.review.catalog import load_catalog
 from nh_parser.vlm import client as vlm_client
 
+import tables
 from export_v2 import build_p1, build_p3
 from recovery import build_recovery_candidates
 from semantic import analyze_page_context, analyze_product_labels
@@ -46,8 +47,16 @@ def _prepare_page(page: dict[str, Any]) -> dict[str, Any]:
     for index, line in enumerate(prepared.get("unassigned_lines") or []):
         line["line_ref"] = f"p{page_no}/unassigned/L{index:03d}"
     prepared["raw_unassigned_lines"] = copy.deepcopy(prepared.get("unassigned_lines") or [])
-    prepared["recovery_candidates"] = build_recovery_candidates(
-        prepared.get("unassigned_lines") or [], page_no=page_no,
+    unassigned = prepared.get("unassigned_lines") or []
+    # 표를 **먼저** 떼어낸다. 복구 후보 생성기는 행 간격을 좁게 잡아 서로 다른
+    # 항목이 섞이지 않게 만들어져 있어서, 그대로 두면 표 한 개가 셀 단위로
+    # 흩어진다(실측: `14. 대출성상품` 부가서비스 표가 13개 영역으로 분해됨).
+    grids = tables.table_candidates(unassigned, page_no=page_no)
+    claimed = {ref for candidate in grids for ref in candidate["line_refs"]}
+    rest = [line for line in unassigned if str(line["line_ref"]) not in claimed]
+    prepared["recovery_candidates"] = sorted(
+        [*grids, *build_recovery_candidates(rest, page_no=page_no)],
+        key=lambda item: ((item.get("bbox") or [0, 0])[1], (item.get("bbox") or [0, 0])[0]),
     )
     return prepared
 
@@ -161,7 +170,8 @@ def _apply_ownership(
         page["regions"].append({
             "region_id": region_id,
             "bbox": copy.deepcopy(candidate["bbox"]),
-            "label": "recovery",
+            "kind": candidate.get("kind") or "text",
+            "label": "table" if candidate.get("kind") == "table" else "recovery",
             "text": candidate["text"],
             "text_source": "ocr_pdf_recovery",
             "lines": lines,
@@ -200,6 +210,86 @@ def _apply_ownership(
     page["table_areas"] = copy.deepcopy(result.get("table_areas") or [])
     page["semantic_bands"] = copy.deepcopy(result.get("semantic_bands") or [])
     _assign_reading_order(page)
+
+
+def _promote_vlm_table_areas(page: dict[str, Any]) -> list[dict[str, Any]]:
+    """VLM이 표라고 지목했는데 기하학이 놓친 자리를 표 Region으로 승격한다.
+
+    VLM은 **어디를 볼지**만 알려준다. 승격된 Region의 좌표와 문구는 그 안에서
+    찾은 복구 Region의 OCR 줄에서 나온다. 모델 좌표는 쓰지 않는다.
+    """
+    areas = page.get("table_areas") or []
+    if not areas:
+        return []
+    page_no = int(page["page_no"])
+    used = sum(1 for region in page["regions"] if region.get("kind") == "table")
+    promoted = []
+    for area in areas:
+        box = tables.area_to_bbox(area, page["canvas"])
+        if not box:
+            continue
+        inside = [
+            region for region in page["regions"]
+            if region.get("origin") == "recovery"
+            and region.get("kind") != "table"
+            and region.get("bbox")
+            and tables.inside_ratio(region["bbox"], box) >= 0.6
+        ]
+        lines = [line for region in inside for line in region.get("lines") or []]
+        if len(inside) < 2 or len(lines) < tables.MIN_LINES:
+            continue
+        used += 1
+        merged = tables.merge_regions(inside, region_id=f"p{page_no}_t{used:03d}")
+        merged["promoted_by"] = {"source": "vlm_table_area", "note": area.get("note")}
+        keep = {str(region["region_id"]) for region in inside}
+        page["regions"] = [
+            region for region in page["regions"] if str(region["region_id"]) not in keep
+        ]
+        page["regions"].append(merged)
+        promoted.append(merged)
+    if promoted:
+        _assign_reading_order(page)
+    return promoted
+
+
+def _place_tables(page: dict[str, Any], image: Image.Image) -> None:
+    """표로 보이는 Region의 OCR 줄을 행·열에 배치한다.
+
+    PaddleX가 `table`로 잡았든(A) 못 잡았든(B) 다른 라벨을 붙였든(C) 같은 경로로
+    다시 읽는다. PaddleX의 표 판정은 대상 선정 힌트로만 쓴다.
+    """
+    _promote_vlm_table_areas(page)
+    placed = 0
+    for region in page.get("regions") or []:
+        lines = [line for line in region.get("lines") or [] if line.get("bbox")]
+        is_candidate = (
+            region.get("kind") == "table"
+            or str(region.get("label") or "").casefold() == "table"
+            or tables.looks_like_grid(lines)
+        )
+        if not is_candidate or len(lines) < tables.MIN_LINES:
+            continue
+        grid = tables.place_cells(image, region)
+        if not grid:
+            region["table_status"] = "not_a_table"
+            continue
+        region["kind"] = "table"
+        region["table"] = grid
+        region["table_status"] = (
+            "placed" if not grid["unplaced_line_refs"] else "partial"
+        )
+        # 원래 줄 이어붙이기는 후보로 남기고 격자 표현을 정본으로 쓴다. 두 값 모두
+        # 같은 OCR 줄에서 나오므로 새 텍스트가 생기지 않는다.
+        region["text_candidates"] = {
+            **(region.get("text_candidates") or {}),
+            "line_assembled": region.get("text"),
+        }
+        region["text"] = grid["text_grid"]
+        region["text_source"] = "ocr_table_grid"
+        if grid["unplaced_line_refs"] or grid["confidence"] < 0.7:
+            region["needs_review"] = True
+        placed += 1
+    page["table_count"] = placed
 
 
 def _label_pages(
@@ -425,6 +515,9 @@ def run_full_pipeline(
                 images[int(page["page_no"])], page, page["recovery_candidates"],
             )
             _apply_ownership(page, result)
+            # 표 구조는 라벨링보다 먼저 복원한다. 라벨러가 셀 낱개가 아니라
+            # 표 하나를 보게 해야 구분값을 한 번만 붙인다.
+            _place_tables(page, images[int(page["page_no"])])
             page["semantic_status"] = "complete"
 
         # 2단계 — 상품별 템플릿. 소유권이 나와야 상품군을 알 수 있으므로 여기서 푼다.
