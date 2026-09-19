@@ -135,6 +135,10 @@ def chat_json(
             except json.JSONDecodeError:
                 repaired = _repair_trailing_escape(text)
                 if repaired is None:
+                    # 잘린 응답은 같은 payload 로 다시 물어도 똑같이 잘린다.
+                    # 재시도가 의미를 가지려면 출력 예산을 늘려야 한다. 한글은
+                    # 토큰당 글자 수가 적어 영문 기준 예산에서 자주 잘린다.
+                    payload["max_tokens"] = min(16000, int(payload["max_tokens"] * 1.6))
                     raise
                 parsed = repaired
             if cache_key is not None:
