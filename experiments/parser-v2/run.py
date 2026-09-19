@@ -1,7 +1,7 @@
-"""parser-v2 1차 실행기.
+"""parser-v2 실행기.
 
-입력 렌더 → 종횡비 기반 통짜/타일 → spark-1118 large → PaddleX 본문 우선 Region
-→ Label Studio 진단 자료까지 만든다. Gemma와 상품 소유권 판정은 아직 호출하지 않는다.
+입력 렌더 → 종횡비 기반 통짜/타일 → spark-1118 서버 YAML → PaddleX 본문 우선
+Region을 만든다. ``--with-vlm``일 때 fc87 Gemma 의미 판정과 P1/P3까지 연결한다.
 """
 from __future__ import annotations
 
@@ -48,6 +48,10 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--tile-span", type=int, default=None)
     parser.add_argument("--sizing", choices=("asis", "maxside"), default="asis")
     parser.add_argument("--max-side", type=int, default=2500)
+    parser.add_argument(
+        "--with-vlm", action="store_true",
+        help="기존 fc87 Gemma로 상품 소유권·복구·단일 라벨을 판정하고 P1/P3까지 생성",
+    )
     return parser.parse_args()
 
 
@@ -235,6 +239,13 @@ def main() -> None:
         "parser-v2 — 1-raw parsing / 2-text source / 3-unassigned",
     )
     (out / "labeling-config.xml").write_text(labeling_config, encoding="utf-8")
+    if args.with_vlm:
+        from full_pipeline import run_full_pipeline
+
+        p1, p3 = run_full_pipeline(
+            documents, tasks, out=out, media_dir=MEDIA_DIR,
+        )
+        print(f"P1/P3: 문서 {len(p1)}개 / {len(p3)}개")
     print(f"\n완료: {out}")
     print(f"Label Studio: {out / 'label-studio.json'}")
 

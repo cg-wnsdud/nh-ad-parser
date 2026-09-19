@@ -63,6 +63,35 @@ uv run --cache-dir .uv-cache-codex python experiments/parser-v2/run.py `
 `labeling-config.xml`과 `label-studio.json`을 Label Studio 프로젝트에 넣으면
 원본 parsing 영역, 선택된 본문 출처, 미배정 줄을 따로 볼 수 있다.
 
+fc87 Gemma 의미 판정과 최종 P1/P3까지 한두 입력만 실행할 때는 `--with-vlm`을 붙인다.
+
+```powershell
+uv run --cache-dir .uv-cache-codex python experiments/parser-v2/run.py `
+  --run-name v2-full-smoke `
+  --input "samples/spark1118-sample/4. 카드상품.pdf" `
+  --with-vlm
+```
+
+추가 산출물은 다음과 같다.
+
+```text
+03-ownership.json  product_id와 전체·상품별 읽기 순서
+04-vlm-evidence.json  분류·템플릿·페이지 의미 판정 원문
+05-p1.json       모든 OCR/PDF/VLM 근거와 복구 이력
+06-p3.json       심의 단계 입력: Region별 bbox/product_id/단일 label/selected_text
+final/*.p3.json  문서별 P3
+vlm-stats.json   fc87 Gemma schema별 호출 수·캐시·시간
+label-studio.json의 `4-p3-semantic` 탭  product_id·단일 라벨·복구 bbox 시각 확인
+```
+
+VLM이 어떤 OCR/PDF 텍스트를 `decorative`로 판단해도 해당 텍스트와 bbox를 삭제하지 않는다.
+P3 복구 Region에 `vlm_excluded=true`, `needs_review=true`로 남겨 사람이 오판을 확인할 수
+있게 한다. VLM은 제공된 ID를 선택할 뿐 새로운 bbox를 만들지 않는다.
+
+일반 페이지의 의미 판정은 페이지 전체 1회다. OCR 단계에서 긴 페이지로 판정된 입력은
+같은 축을 2~4개 문맥 밴드로 나누며, 각 Region/복구 후보 ID는 중심점 기준으로 정확히 한
+밴드에만 들어간다. crop은 주변 문맥만 겹치고 판정 소유권은 겹치지 않는다.
+
 터널 없이 이미 저장한 `merge-large` 결과로 Region 조립만 재검증하려면 다음을 쓴다.
 
 ```powershell
