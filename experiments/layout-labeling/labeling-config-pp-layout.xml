@@ -1,5 +1,6 @@
 <View>
   <Header value="PP-DocLayout_plus-L의 20개 클래스와 같은 기준으로 박스를 표시합니다." />
+  <Header value="$source_file" size="3" />
   <Image name="image" value="$image" zoom="true" zoomControl="true" rotateControl="false" />
   <RectangleLabels name="pp_layout" toName="image" strokeWidth="2" choice="single">
     <Label value="paragraph_title" background="#E53935" />

@@ -1,5 +1,6 @@
 <View>
   <Header value="NH 광고물의 업무 단위와 소속 관계를 표시합니다. PP 클래스와 별도 프로젝트로 사용합니다." />
+  <Header value="$source_file" size="3" />
   <Image name="image" value="$image" zoom="true" zoomControl="true" rotateControl="false" />
   <RectangleLabels name="nh_structure" toName="image" strokeWidth="3" choice="single">
     <Label value="product_panel" background="#1565C0" />

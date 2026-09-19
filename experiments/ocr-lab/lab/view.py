@@ -135,6 +135,9 @@ def labeling_config(labels: list[str]) -> str:
     return (
         "<View>\n"
         '  <Header value="ocr-lab — 1-det / 2-parsing / 3-ocr / 4-unassigned" />\n'
+        # 화면에 입력 파일명을 띄운다. Header 의 value 가 `$키` 면 task data 의 값을
+        # 꺼내 쓴다. 이게 없으면 task 를 열었을 때 어느 파일인지 알 수 없다.
+        '  <Header value="$source_file" size="3" />\n'
         '  <Image name="image" value="$image" zoom="true" zoomControl="true" '
         'rotateControl="false" />\n'
         '  <RectangleLabels name="layout" toName="image" strokeWidth="2" choice="single">\n'
