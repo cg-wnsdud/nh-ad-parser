@@ -25,16 +25,13 @@ class Profile:
 
     @property
     def request_payload(self) -> dict:
-        # threshold/unclip/textDet 값은 일부러 보내지 않아 spark-1118 YAML을 사용한다.
-        return {
-            "fileType": 1,
-            "useDocOrientationClassify": False,
-            "useDocUnwarping": False,
-            "useFormulaRecognition": False,
-            "useTextlineOrientation": False,
-            "useTableRecognition": False,
-            "layoutMergeBboxesMode": "large",
-        }
+        # 실행 옵션은 모두 spark-1118 파이프라인 YAML이 정한다. 선택 옵션을 HTTP에서
+        # 보내면 YAML의 클래스별 dict와 모듈 on/off를 요청 스칼라가 덮어쓸 수 있다.
+        return {"fileType": 1}
 
     def manifest(self) -> dict:
-        return {**asdict(self), "request_payload": self.request_payload}
+        return {
+            **asdict(self),
+            "request_payload": self.request_payload,
+            "paddlex_options_source": "server_pipeline_yaml",
+        }

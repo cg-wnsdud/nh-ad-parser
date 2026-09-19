@@ -1,6 +1,6 @@
 # parser-v2 실험 환경
 
-spark-1118의 `merge-large` OCR 결과에서 시작해 Region 소유권, 상품 그룹, 읽기 순서,
+spark-1118의 서버 파이프라인 YAML 결과에서 시작해 Region 소유권, 상품 그룹, 읽기 순서,
 fc87 Gemma 판독, 템플릿 단일 라벨, P1/P3까지 단계적으로 연결하는 실험 공간이다.
 
 Region 텍스트는 PaddleX `block_content`와 좌표 기반 OCR/디지털 줄 중 하나를 미리 버리지
@@ -41,7 +41,7 @@ ssh -N -L 18081:127.0.0.1:8081 spark-1118
 
 1. 입력 로드와 페이지 렌더
 2. 종횡비 2.0 기준 통짜/타일 분기
-3. spark-1118 merge-large 호출
+3. spark-1118 호출 — `fileType` 외 선택 옵션은 보내지 않고 서버 YAML 사용
 4. 페이지 좌표 복원과 타일 중복 제거
 5. `block_content`·OCR·디지털 본문 후보 보존과 줄 단일 귀속
 6. Label Studio `raw / assigned / unassigned` 출력
@@ -71,13 +71,38 @@ uv run --cache-dir .uv-cache-codex python experiments/parser-v2/replay.py `
   --run-name v2-replay-large
 ```
 
-## 검증 완료 기준선
+## 현재 기준선 — 서버 YAML만 사용
 
-2026-09-19에 `samples/spark1118-sample` 전체를 아래 조건으로 실행했다.
+2026-09-19에 `v2-server-yaml-live`로 49개 입력·51페이지를 다시 실행했다.
+
+- 실제 HTTP 선택 옵션은 `fileType` 하나뿐이다.
+- Region 1,206개, 정본 텍스트 줄 3,838개, 미배정 줄 199개다.
+- 본문 후보 충돌은 85개다. 서버 YAML의 표 인식이 켜져 `block_content` 후보가 늘어난 영향이다.
+- 과거 HTTP `large` 실행과 비교하면 **51페이지 전체의 Region bbox·layout label은 동일**했다.
+- 17페이지에서 선택 본문 후보가 달랐고, 전체 시간은 164.3초에서 253.8초로 늘었다.
+
+```text
+experiments/parser-v2/outputs/v2-server-yaml-live/
+```
+
+manifest의 아래 두 값이 서버 설정만 사용했다는 증거다.
+
+```json
+{
+  "request_payload": {"fileType": 1},
+  "paddlex_options_source": "server_pipeline_yaml"
+}
+```
+
+## 과거 비교 기준선 — HTTP `large` override
+
+2026-09-19에 `samples/spark1118-sample` 전체를 아래 조건으로 실행했다. 이 실행은
+`layoutMergeBboxesMode=large`를 HTTP 요청에서 보낸 **과거 비교 기준선**이다. 이후 실행은
+선택 옵션을 보내지 않고 spark-1118 YAML만 사용한다.
 
 - 입력 49개, 51페이지
 - 일반 페이지는 한 장 그대로 호출하고 종횡비가 2.0을 넘는 7페이지는 높이 1600px 타일 사용
-- `layoutMergeBboxesMode=large`, 표·수식·방향 보정은 요청에서 끔
+- 과거 실행은 `layoutMergeBboxesMode=large`, 표·수식·방향 보정을 요청에서 덮어씀
 - Region 1,206개, 정본 텍스트 줄 3,837개
 - Region에 들어가지 않은 정본 줄 199개, 본문 후보 충돌 17개
 - 긴 페이지 타일 경계 OCR 중복은 좌표로 합치고, 탈락 판독은 `tile_alternates`에 보존
@@ -92,7 +117,7 @@ experiments/parser-v2/outputs/v2-baseline-live/
 
 ```powershell
 uv run --cache-dir .uv-cache-codex python experiments/parser-v2/summarize.py `
-  experiments/parser-v2/outputs/v2-baseline-live
+  experiments/parser-v2/outputs/v2-server-yaml-live
 ```
 
 ## Label Studio에서 직접 확인
@@ -100,11 +125,11 @@ uv run --cache-dir .uv-cache-codex python experiments/parser-v2/summarize.py `
 브라우저에서 <http://localhost:8080>만 사용한다. `127.0.0.1`과 섞어 쓰면 로그인 쿠키가
 달라져 다시 로그인할 수 있다.
 
-1. 새 프로젝트 `parser-v2 baseline live`를 만든다.
+1. 새 프로젝트 `parser-v2 server yaml live`를 만든다.
 2. `Settings → Labeling Interface → Code`에 아래 파일 내용을 붙여 넣고 저장한다.
 
    ```text
-   experiments/parser-v2/outputs/v2-baseline-live/labeling-config.xml
+   experiments/parser-v2/outputs/v2-server-yaml-live/labeling-config.xml
    ```
 
 3. `Settings → Cloud Storage → Add Source Storage → Local Files`에서
@@ -112,7 +137,7 @@ uv run --cache-dir .uv-cache-codex python experiments/parser-v2/summarize.py `
 4. `Data Import`에서 아래 파일을 올린다.
 
    ```text
-   experiments/parser-v2/outputs/v2-baseline-live/label-studio.json
+   experiments/parser-v2/outputs/v2-server-yaml-live/label-studio.json
    ```
 
 한 task의 prediction 선택기는 다음 뜻이다.
@@ -147,6 +172,6 @@ uv run --cache-dir .uv-cache-codex python experiments/parser-v2/summarize.py `
 3. 일반 페이지는 전체 이미지를 문맥으로 쓰고, 긴 페이지는 저해상도 전체 보기와 타일/Region
    crop을 함께 써 상품 경계를 잃지 않게 한다.
 4. 상품 그룹 안에서만 읽기 순서를 정렬하고 명백한 역전만 고친다.
-5. 1,206개 전부를 다시 읽히지 않고, 충돌 17개와 금리·금액 등 중요 영역만 Reader/Judge로
+5. 1,206개 전부를 다시 읽히지 않고, 충돌 85개와 금리·금액 등 중요 영역만 Reader/Judge로
    교차 판독한다.
 6. 최종적으로 기존 P1/P3 형식에 `product_id`와 단일 라벨 결과를 연결한다.
