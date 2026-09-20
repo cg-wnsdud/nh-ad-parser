@@ -232,9 +232,9 @@ def test_label_validation_drops_labels_outside_the_product_template():
         {
             "analysis": "",
             "region_labels": [
-                {"region_id": "r1", "label": "대출한도", "mixed_gubun": False,
+                {"region_id": "r1", "labels": ["대출한도"],
                  "confidence": 0.9, "reason": ""},
-                {"region_id": "r2", "label": "연회비", "mixed_gubun": False,
+                {"region_id": "r2", "labels": ["연회비"],
                  "confidence": 0.9, "reason": "다른 템플릿 구분값"},
             ],
         },
@@ -243,8 +243,8 @@ def test_label_validation_drops_labels_outside_the_product_template():
     )
 
     by_region = {item["region_id"]: item for item in result["region_labels"]}
-    assert by_region["r1"]["label"] == "대출한도"
-    assert by_region["r2"]["label"] is None
+    assert by_region["r1"]["labels"] == ["대출한도"]
+    assert by_region["r2"]["labels"] == []
     assert by_region["r3"]["reason"].endswith("검수 필요")
 
 
@@ -257,7 +257,7 @@ def test_label_pages_marks_regions_for_review_when_template_is_unresolved():
 
     full_pipeline._label_pages([page], {"product_1": {"labels": []}}, {1: None})
 
-    assert page["regions"][0]["semantic_label"] is None
+    assert page["regions"][0]["semantic_labels"] == []
     assert page["regions"][0]["needs_review"] is True
     assert "미확정" in page["regions"][0]["label_decision"]["reason"]
 

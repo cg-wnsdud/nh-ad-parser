@@ -18,7 +18,6 @@ import reading
 import tables
 from export_v2 import build_p1, build_p3
 from recovery import build_recovery_candidates
-import semantic
 from semantic import analyze_page_context, analyze_product_labels
 from templates import PAGE_COMMON, resolve_product_templates, review_units
 
@@ -143,8 +142,7 @@ def _apply_ownership(
     for region in page.get("regions") or []:
         decision = by_region[region["region_id"]]
         region["product_id"] = decision["product_id"]
-        region["semantic_label"] = None
-        region["mixed_gubun"] = bool(decision.get("mixed_gubun"))
+        region["semantic_labels"] = []
         region["needs_review"] = bool(
             decision.get("confidence", 0.0) < 0.7 or decision.get("product_id") == "unknown"
         )
@@ -183,8 +181,7 @@ def _apply_ownership(
             "product_id": (
                 "page_common" if decision["action"] == "page_common" else decision["product_id"]
             ),
-            "semantic_label": None,
-            "mixed_gubun": False,
+            "semantic_labels": [],
             "needs_review": bool(
                 decision["action"] in {"needs_review", "decorative"}
                 or decision.get("confidence", 0.0) < 0.7
@@ -227,8 +224,8 @@ def _promote_vlm_table_areas(page: dict[str, Any]) -> list[dict[str, Any]]:
     합치지 않는 경우가 둘이다.
 
     - `kind == "field_list"`: 시각적으로는 격자지만 각 행이 서로 다른 항목이다.
-      `대출대상 | …`, `대출한도 | …` 를 한 Region 으로 만들면 라벨이 하나만
-      남아 나머지 항목이 묻힌다. 실측(2026-09-20): VLM 이 `2. 대출성상품` 의
+      복수 라벨을 붙일 수 있어도 행 경계가 사라지면 서로 다른 의미가 한 텍스트로
+      섞이므로 합치지 않는다. 실측(2026-09-20): VLM 이 `2. 대출성상품` 의
       항목명–값 블록을 confidence 1.0 으로 표라고 지목했다.
     - 안에 든 Region 들의 상품 소속이 갈릴 때. 상품을 가로질러 합치면 심의
       단위가 섞인다.
@@ -237,7 +234,6 @@ def _promote_vlm_table_areas(page: dict[str, Any]) -> list[dict[str, Any]]:
     if not areas:
         return []
     page_no = int(page["page_no"])
-    used = sum(1 for region in page["regions"] if region.get("kind") == "table")
     promoted = []
     for area in areas:
         if str(area.get("kind") or "table") != "table":
@@ -262,17 +258,34 @@ def _promote_vlm_table_areas(page: dict[str, Any]) -> list[dict[str, Any]]:
         owners = {str(region.get("product_id") or "unknown") for region in inside}
         if len(owners - {"unknown"}) > 1:
             continue
-        used += 1
-        merged = tables.merge_regions(inside, region_id=f"p{page_no}_t{used:03d}")
+        # 새 pN_tNNN ID를 만들지 않는다. PaddleX가 table로 본 Region을 우선
+        # 기준점으로 삼고, 없으면 구성원 중 페이지 배열에서 가장 앞선 Region을
+        # 쓴다. 표 구조는 그 원래 region_id에 붙는다.
+        positions = {
+            str(region["region_id"]): index
+            for index, region in enumerate(page["regions"])
+        }
+        anchor = min(
+            inside,
+            key=lambda region: (
+                str((region.get("layout_observation") or {}).get("label") or "").casefold()
+                != "table",
+                positions.get(str(region["region_id"]), 10**9),
+            ),
+        )
+        merged = tables.merge_regions(
+            inside, region_id=str(anchor["region_id"]), anchor=anchor,
+        )
         merged["promoted_by"] = {
             "source": "vlm_table_area", "note": area.get("note"),
             "confidence": area.get("confidence"),
         }
         gone = {str(region["region_id"]) for region in inside}
+        insert_at = min(positions[region_id] for region_id in gone)
         page["regions"] = [
             region for region in page["regions"] if str(region["region_id"]) not in gone
         ]
-        page["regions"].append(merged)
+        page["regions"].insert(insert_at, merged)
         # 사라진 Region 을 가리키던 연결을 새 표 Region 으로 옮긴다. 그대로 두면
         # 읽기 순서 배치가 대상을 잃는다.
         for region in page["regions"]:
@@ -324,8 +337,16 @@ def _place_tables(page: dict[str, Any], image: Image.Image) -> None:
             **(region.get("text_candidates") or {}),
             "line_assembled": region.get("text"),
         }
-        region["text"] = grid["text_grid"]
-        region["text_source"] = "ocr_table_grid"
+        note_text = "\n".join(
+            str(note.get("text") or "").strip() for note in grid.get("notes") or []
+            if str(note.get("text") or "").strip()
+        )
+        region["text"] = "\n\n".join(
+            value for value in (grid["text_grid"], note_text) if value
+        )
+        region["text_source"] = (
+            "ocr_table_grid_with_notes" if note_text else "ocr_table_grid"
+        )
         if grid["unplaced_line_refs"] or grid["confidence"] < 0.7:
             region["needs_review"] = True
         placed += 1
@@ -354,12 +375,11 @@ def _label_pages(
             if not labels:
                 # 템플릿을 확정하지 못한 상품은 라벨을 억지로 붙이지 않고 남긴다.
                 for region in regions:
-                    region["semantic_label"] = None
+                    region["semantic_labels"] = []
                     region["needs_review"] = True
                     region["label_decision"] = {
                         "region_id": region["region_id"],
-                        "label": None,
-                        "mixed_gubun": False,
+                        "labels": [],
                         "confidence": 0.0,
                         "reason": f"{product_id} 템플릿 미확정으로 라벨링 보류",
                     }
@@ -377,118 +397,11 @@ def _label_pages(
             by_region = {item["region_id"]: item for item in result["region_labels"]}
             for region in regions:
                 decision = by_region[str(region["region_id"])]
-                region["semantic_label"] = decision["label"]
+                region["semantic_labels"] = list(decision["labels"])
                 region["label_decision"] = decision
-                if decision["mixed_gubun"]:
-                    region["mixed_gubun"] = True
-                if decision["label"] is None or decision["confidence"] < 0.7:
+                if not decision["labels"] or decision["confidence"] < 0.7:
                     region["needs_review"] = True
         page["label_analysis"] = "\n".join(value for value in notes if value)
-
-
-def _label_region_lines(
-    pages: list[dict[str, Any]],
-    product_templates: dict[str, dict[str, Any]],
-    images: dict[int, Any],
-) -> int:
-    """구분값이 여럿 섞인 Region 에 라벨을 **여러 개** 붙인다.
-
-    Region 을 쪼개지 않는다. 한때 자식 Region 으로 대체해봤지만 손해가 더 컸다.
-
-    - 자식 bbox 는 결국 자기가 가진 OCR 줄의 합집합이라, 라벨 구간에서 같은
-      좌표를 계산할 수 있다. 쪼개서 얻는 정밀도가 **없다**.
-    - 라벨이 틀리면 쪼개기는 **경계까지 틀린다**. 라벨만 붙이면 라벨만 고치면 된다.
-    - PaddleX 가 잡은 원본 영역과 그 ID 가 사라져 P3 에서 되짚을 수 없었다.
-      실측(2026-09-20): 분할 실행의 `location_index` 에 부모 `p1_r001` 이 없고
-      자식만 남았다.
-
-    실측 대상(`1. 예금성상품(거치식)` p1_r001): `가입대상개인 / 가입금액100만원 이상 /
-    (원 단위)` 가 라벨 `가입대상` 하나만 받아 `가입금액` 구분값이 사라졌다.
-    """
-    labelled = 0
-    for page in pages:
-        image = images.get(int(page["page_no"]))
-        for region in page.get("regions") or []:
-            if not region.get("mixed_gubun") or region.get("kind") == "table":
-                continue
-            if len(region.get("lines") or []) < 2:
-                continue
-            resolution = product_templates.get(
-                str(region.get("product_id") or "unknown")
-            ) or {}
-            labels = list(resolution.get("labels") or [])
-            if not labels:
-                continue
-            result = semantic.analyze_region_lines(
-                image, region,
-                template_id=resolution.get("template_id"), labels=labels,
-            )
-            spans = _label_spans_from_lines(region, result["line_labels"])
-            if not spans:
-                continue
-            region["label_spans"] = spans
-            named = [span for span in spans if span["label"]]
-            # 대표 라벨은 줄을 가장 많이 가진 구간이 갖는다. Region 하나를
-            # 고를 수밖에 없는 화면·요약에서 쓴다.
-            if named:
-                region["semantic_label"] = max(
-                    named, key=lambda span: len(span["line_refs"]),
-                )["label"]
-            # 구분값이 여럿이라는 사실 자체는 문제가 아니다. 검수는 미분류
-            # 구간이 남았을 때만 켠다.
-            region["label_span_count"] = len(spans)
-            if len(named) < len(spans):
-                # 어느 구분값에도 안 걸리는 줄이 있다. 광고 수식어구일 수도,
-                # 빠뜨린 항목일 수도 있어 위치를 남기고 검수로 올린다.
-                region["needs_review"] = True
-            labelled += 1
-    return labelled
-
-
-def _label_spans_from_lines(
-    region: dict[str, Any], line_labels: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """같은 라벨이 이어지는 줄 묶음마다 라벨 구간을 만든다.
-
-    순서를 유지한 채 연속 구간만 묶는다. 떨어져 있는 같은 라벨을 합치면 그
-    사이의 다른 항목까지 bbox 안에 들어간다.
-
-    라벨이 없는 구간도 `label=None` 으로 남긴다. 어디가 미분류인지 보여야
-    "이건 광고 문구라 무시해도 된다"를 나중에 판단할 수 있다.
-    """
-    by_ref = {str(line["line_ref"]): line for line in region.get("lines") or []}
-    runs: list[tuple[str | None, list[dict[str, Any]]]] = []
-    for item in line_labels:
-        line = by_ref.get(str(item.get("line_ref")))
-        if line is None:
-            continue
-        label = item.get("label")
-        if runs and runs[-1][0] == label:
-            runs[-1][1].append(line)
-        else:
-            runs.append((label, [line]))
-
-    spans = []
-    for order, (label, lines) in enumerate(runs, start=1):
-        boxes = [list(line["bbox"]) for line in lines if line.get("bbox")]
-        span = {
-            "span_id": f"{region['region_id']}#{order:02d}",
-            "label": label,
-            "line_refs": [str(line["line_ref"]) for line in lines],
-            "text": "\n".join(
-                str(line.get("text") or "").strip() for line in lines
-                if str(line.get("text") or "").strip()
-            ),
-            # 좌표는 이 구간이 가진 OCR 줄에서만 나온다. 부모 bbox 를 나누거나
-            # 새로 그리지 않는다.
-            "bbox": [
-                min(b[0] for b in boxes), min(b[1] for b in boxes),
-                max(b[2] for b in boxes), max(b[3] for b in boxes),
-            ] if boxes else None,
-            "bbox_source": "ocr_pdf_lines" if boxes else None,
-        }
-        spans.append(span)
-    return spans
 
 
 def _append_p3_label_studio(
@@ -504,15 +417,15 @@ def _append_p3_label_studio(
         for page in document["pages"]:
             rows = []
             for region in page["regions"]:
-                semantic = region.get("label") or "미분류"
+                semantic = ", ".join(region.get("labels") or []) or "미분류"
                 label = f"P3 {region.get('product_id') or 'unknown'} | {semantic}"
                 labels.add(label)
                 rows.append({
                     "bbox": region["bbox"],
                     "label": label,
                     "content": (
-                        f"{region['region_id']} | origin={region['origin']} | "
-                        f"review={region['needs_review']} | {region['selected_text']}"
+                        f"{region['region_id']} | review={region['needs_review']} | "
+                        f"labels={semantic} | {region['selected_text']}"
                     ),
                 })
             pages[(source_file, int(page["page_no"]))] = rows
@@ -574,7 +487,7 @@ def _write_stage_views(documents: list[dict[str, Any]], out: Path) -> None:
                 "regions": [{
                     "region_id": region["region_id"],
                     "product_id": region.get("product_id"),
-                    "label": region.get("semantic_label"),
+                    "labels": copy.deepcopy(region.get("semantic_labels") or []),
                     "reading_order": region.get("reading_order"),
                     "product_reading_order": region.get("product_reading_order"),
                     "related_region_id": region.get("related_region_id"),
@@ -684,12 +597,12 @@ def run_full_pipeline(
         doc["product_templates"] = product_templates
         doc["template"] = _document_template(product_templates)
 
-        # 3단계 — 상품별 라벨링.
+        # 3단계 — 상품별 라벨링. 한 Region에 해당하는 구분값을 한 번에 모두
+        # 받는다. 줄별 span이나 자식 Region은 만들지 않는다.
         _label_pages(pages, product_templates, images)
-        # 4단계 — 구분값이 섞인 Region 에 줄 단위로 라벨을 더 붙인다. 라벨링
-        # 뒤라야 어디가 섞였는지(mixed_gubun) 알 수 있다. 영역은 건드리지 않는다.
-        doc["multi_label_regions"] = _label_region_lines(
-            pages, product_templates, images,
+        doc["multi_label_regions"] = sum(
+            1 for page in pages for region in page.get("regions") or []
+            if len(region.get("semantic_labels") or []) > 1
         )
         doc["review_units"] = review_units(pages, product_templates)
 

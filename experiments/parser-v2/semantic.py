@@ -116,14 +116,13 @@ def _ownership_schema(region_ids: list[str], candidate_ids: list[str]) -> dict[s
                     "properties": {
                         "region_id": {"type": "string", "enum": region_enum},
                         "product_id": {"type": "string", "enum": PRODUCT_IDS},
-                        "mixed_gubun": {"type": "boolean"},
                         "confidence": {"type": "number"},
                         # Region마다 자유 서술 reason을 받으면 응답의 대부분이
                         # 거기에 들어간다. 실측: Region 30개 페이지에서 응답이
                         # 14,827자까지 늘어 잘렸고, 예산을 키우자 120초 타임아웃이
                         # 났다. 근거는 analysis 한 곳에 모으고 행마다 두지 않는다.
                     },
-                    "required": ["region_id", "product_id", "mixed_gubun", "confidence"],
+                    "required": ["region_id", "product_id", "confidence"],
                     "additionalProperties": False,
                 },
             },
@@ -239,7 +238,6 @@ def analyze_page_ownership(
    회사명·로고·심의번호·연락처·공통 안내문구, 그리고 특정 상품 하나가 아니라
    광고 전체에 걸리는 유의사항은 **반드시 page_common**입니다.
    unknown은 상품 소속도 공통도 아니라고 판단될 때만 쓰는 마지막 선택지입니다.
-   서로 다른 의미가 실제로 섞였을 때만 mixed_gubun=true로 하세요.
 3. recovery_decisions: 아래 CANDIDATE ID를 정확히 한 번씩 반환하세요.
    - new_region: 독립 의미 영역
    - attach_context: target_region_id의 설명·유의사항이지만 bbox는 별도 보존
@@ -430,7 +428,6 @@ def validate_ownership(
         region_map.setdefault(region_id, {
             "region_id": region_id,
             "product_id": "unknown",
-            "mixed_gubun": False,
             "confidence": 0.0,
             "reason": "VLM 응답에서 누락되어 검수 필요",
         })
@@ -481,12 +478,16 @@ def _label_schema(region_ids: list[str], labels: list[str]) -> dict[str, Any]:
                     "type": "object",
                     "properties": {
                         "region_id": {"type": "string", "enum": region_ids or ["__none__"]},
-                        "label": {"type": "string", "enum": [*labels, ABSTAIN]},
-                        "mixed_gubun": {"type": "boolean"},
+                        "labels": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": labels or ["__none__"]},
+                            "uniqueItems": True,
+                            "maxItems": len(labels),
+                        },
                         "confidence": {"type": "number"},
                         "reason": {"type": "string"},
                     },
-                    "required": ["region_id", "label", "mixed_gubun", "confidence", "reason"],
+                    "required": ["region_id", "labels", "confidence", "reason"],
                     "additionalProperties": False,
                 },
             },
@@ -533,13 +534,13 @@ def analyze_product_labels(
 허용 라벨: {', '.join(labels)}
 
 아래 REGION ID {len(region_ids)}개를 **모두** region_labels 배열에 정확히 한 번씩
-넣고 주 라벨 **하나**를 고르세요.
+넣고, 각 Region에 실제로 들어 있는 구분값을 **모두** labels 배열에 넣으세요.
 
 - 판정은 반드시 region_labels 배열에 넣으세요. analysis에 문장으로 적으면 무효입니다.
 - analysis에는 전체 요약 한 문장만, 각 reason은 40자 이내로 쓰세요.
-- 허용 라벨 중 맞는 것이 없으면 {ABSTAIN}을 고르세요. 억지로 고르지 마세요.
-- 한 Region에 서로 다른 구분값이 실제로 섞여 있으면 mixed_gubun=true로 표시하고
-  둘 중 하나를 임의로 고르지 마세요.
+- 허용 라벨 중 맞는 것이 없으면 labels=[]로 두세요. 억지로 고르지 마세요.
+- 한 Region에 가입대상과 가입금액처럼 서로 다른 구분값이 함께 있으면
+  labels=["가입대상", "가입금액"]처럼 모두 반환하세요.
 - 이 목록은 이미 이 상품 소속으로 확정된 영역입니다. 상품 소유권을 다시 판정하지 마세요.
 - 파란 박스가 이미지 위의 해당 영역입니다. 위치와 주변 문맥을 함께 보세요.
 
@@ -599,19 +600,20 @@ def validate_labels(
         region_id = str(item.get("region_id") or "")
         if region_id not in set(region_ids) or region_id in output:
             continue
-        label = item.get("label")
+        selected = []
+        for label in item.get("labels") or []:
+            if label in allowed and label not in selected:
+                selected.append(label)
         output[region_id] = {
             "region_id": region_id,
-            "label": label if label in allowed else None,
-            "mixed_gubun": bool(item.get("mixed_gubun")),
+            "labels": selected,
             "confidence": float(item.get("confidence") or 0.0),
             "reason": str(item.get("reason") or ""),
         }
     for region_id in region_ids:
         output.setdefault(region_id, {
             "region_id": region_id,
-            "label": None,
-            "mixed_gubun": False,
+            "labels": [],
             "confidence": 0.0,
             "reason": "VLM 응답에서 누락되어 검수 필요",
         })
@@ -622,102 +624,3 @@ def validate_labels(
 
 
 # ── 3단계 · 줄 단위 분할 ────────────────────────────────────────────
-
-
-def _line_label_schema(line_refs: list[str], labels: list[str]) -> dict[str, Any]:
-    return {
-        "type": "object",
-        "properties": {
-            "analysis": {"type": "string"},
-            "line_labels": {
-                "type": "array",
-                "minItems": len(line_refs),
-                "maxItems": len(line_refs),
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "line_ref": {"type": "string", "enum": line_refs or ["__none__"]},
-                        "label": {"type": "string", "enum": [*labels, ABSTAIN]},
-                        "confidence": {"type": "number"},
-                    },
-                    "required": ["line_ref", "label", "confidence"],
-                    "additionalProperties": False,
-                },
-            },
-        },
-        "required": ["analysis", "line_labels"],
-        "additionalProperties": False,
-    }
-
-
-def analyze_region_lines(
-    image: Image.Image,
-    region: dict[str, Any],
-    *,
-    template_id: str | None,
-    labels: list[str],
-) -> dict[str, Any]:
-    """한 Region 안의 줄마다 구분값을 정한다.
-
-    Region 하나에 구분값이 여럿 섞여 있을 때만 부른다. 실측(2026-09-20,
-    `1. 예금성상품(거치식)` p1_r001): `가입대상개인 / 가입금액100만원 이상 /
-    (원 단위)` 세 줄이 한 Region 이라 라벨이 `가입대상` 하나만 붙고 `가입금액`
-    구분값이 사라졌다.
-
-    줄에는 이미 bbox 가 있으므로 좌표를 새로 만들 필요가 없다. 모델은 줄 ID 에
-    라벨만 붙인다.
-    """
-    lines = [line for line in region.get("lines") or [] if line.get("line_ref")]
-    if len(lines) < 2 or not labels:
-        return {"analysis": "", "line_labels": [], "calls": 0}
-    line_refs = [str(line["line_ref"]) for line in lines]
-    rows = "\n".join(
-        f"- {line['line_ref']} {' '.join(str(line.get('text') or '').split())}"
-        for line in lines
-    )
-    prompt = f"""당신은 농협 금융광고 구분값 라벨러입니다.
-
-아래는 영역 하나 안의 줄 목록입니다. 이 영역에는 서로 다른 구분값이 섞여 있습니다.
-**줄마다** 어느 구분값에 속하는지 정하세요.
-
-적용 템플릿: {template_id or '공통'}
-허용 라벨: {', '.join(labels)}
-
-- 아래 LINE ID {len(line_refs)}개를 **모두** line_labels 배열에 정확히 한 번씩 넣으세요.
-- 판정은 반드시 배열에 넣으세요. analysis 에 문장으로 적으면 무효입니다.
-- 앞줄에 딸린 설명·단위·괄호는 **앞줄과 같은 라벨**을 주세요.
-  예) `가입금액100만원 이상` 다음의 `(원 단위)` 는 같은 가입금액입니다.
-- 허용 라벨 중 맞는 것이 없으면 {ABSTAIN} 을 고르세요.
-
-영역 텍스트 줄:
-{rows}
-"""
-    result = vlm_client.chat_json(
-        [
-            {"type": "text", "text": prompt},
-            vlm_client.image_part(image, box=(1200, 1200), quality=92),
-        ],
-        schema_name="parser_v2_region_line_labels",
-        schema=_line_label_schema(line_refs, labels),
-        max_tokens=min(10000, 800 + 200 * len(line_refs)),
-    )
-    allowed = set(labels)
-    seen: dict[str, dict[str, Any]] = {}
-    for item in result.get("line_labels") or []:
-        ref = str(item.get("line_ref") or "")
-        if ref not in set(line_refs) or ref in seen:
-            continue
-        label = item.get("label")
-        seen[ref] = {
-            "line_ref": ref,
-            "label": label if label in allowed else None,
-            "confidence": float(item.get("confidence") or 0.0),
-        }
-    return {
-        "analysis": str(result.get("analysis") or ""),
-        "line_labels": [
-            seen.get(ref, {"line_ref": ref, "label": None, "confidence": 0.0})
-            for ref in line_refs
-        ],
-        "calls": 1,
-    }

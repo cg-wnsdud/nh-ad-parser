@@ -153,6 +153,29 @@ def test_build_grid_drops_duplicate_placement_of_the_same_line():
     assert len(refs) == len(set(refs))
 
 
+def test_build_grid_keeps_rows_below_declared_grid_as_table_notes():
+    by_ref = {
+        "H": _line("H", 10, 10, 100, 20, "구분"),
+        "V": _line("V", 10, 30, 100, 40, "2% 적립"),
+        "N": _line("N", 10, 60, 300, 70, "주1) 전월 실적 조건 적용"),
+    }
+    result = {
+        "analysis": "2행 1열 표와 아래 주석", "rows": 2, "cols": 1,
+        "confidence": 0.9,
+        "cells": [
+            {"line_ref": "H", "row": 0, "col": 0, "is_header": True},
+            {"line_ref": "V", "row": 1, "col": 0, "is_header": False},
+            {"line_ref": "N", "row": 2, "col": 0, "is_header": False},
+        ],
+    }
+
+    grid = tables.build_grid(result, by_ref)
+
+    assert grid["text_grid"] == "| 구분 |\n|---|\n| 2% 적립 |"
+    assert grid["notes"][0]["text"] == "주1) 전월 실적 조건 적용"
+    assert grid["unplaced_line_refs"] == []
+
+
 def test_build_grid_returns_none_when_the_model_says_not_a_table():
     by_ref = {line["line_ref"]: line for line in _benefit_table()[:6]}
 
@@ -184,7 +207,8 @@ def test_vlm_table_area_promotes_scattered_recovery_regions_without_new_bbox():
 
     assert len(promoted) == 1
     merged = promoted[0]
-    assert merged["region_id"] == "p1_t001"
+    # 별도 t ID를 만들지 않고 첫 원본 Region ID를 대표로 유지한다.
+    assert merged["region_id"] == "p1_x001"
     assert merged["kind"] == "table"
     assert merged["bbox"] == [560, 1842, 1534, 1924]
     assert merged["bbox_source"] == "ocr_pdf_lines"
@@ -246,7 +270,7 @@ def test_vlm_table_area_merges_paddlex_cells_too():
 
     assert len(promoted) == 1
     merged = promoted[0]
-    assert merged["region_id"] == "p1_t001"
+    assert merged["region_id"] == "p1_x001"
     assert merged["kind"] == "table"
     assert merged["bbox"] == [467, 2315, 1901, 2485]
     assert merged["bbox_source"] == "ocr_pdf_lines"

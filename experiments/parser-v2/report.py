@@ -95,15 +95,16 @@ def _table_html(table: dict[str, Any]) -> str:
             out.append(f"<{tag}>{cells[r][c]}</{tag}>")
         out.append("</tr>")
     out.append("</table>")
-    unplaced = table.get("unplaced_line_refs") or []
-    if unplaced:
-        out.append(
-            f"<div class='warn'>격자에 배치되지 못한 줄 {len(unplaced)}개 — 검수 필요</div>"
-        )
+    notes = [str(note.get("text") or "").strip() for note in table.get("notes") or []]
+    notes = [value for value in notes if value]
+    if notes:
+        out.append("<div class='table-notes'><b>표 관련 문구</b>")
+        out.extend(f"<div>{html.escape(value)}</div>" for value in notes)
+        out.append("</div>")
     return "".join(out)
 
 
-def _region_html(region: dict[str, Any], index: int) -> str:
+def _region_html(region: dict[str, Any]) -> str:
     product = str(region.get("product_id") or "unknown")
     entries = region.get("labels") or []
     chips = [
@@ -113,48 +114,32 @@ def _region_html(region: dict[str, Any], index: int) -> str:
     # 사라져, 영역을 쪼개지 않기로 한 판단을 검증할 수 없다.
     if entries:
         chips += [
-            f"<span class='chip lab'>{html.escape(str(entry['label']))}</span>"
-            if entry.get("label")
-            else "<span class='chip none'>미분류 구간</span>"
-            for entry in entries
+            f"<span class='chip lab'>{html.escape(str(label))}</span>"
+            for label in entries
         ]
     else:
         chips.append("<span class='chip none'>라벨 없음</span>")
-    if region.get("origin") == "recovery":
-        chips.append("<span class='chip alt'>복구</span>")
     if region.get("kind") == "table":
         chips.append("<span class='chip alt'>표</span>")
     if region.get("needs_review"):
         chips.append("<span class='chip rev'>검수</span>")
 
     if region.get("table"):
+        selected = html.escape(str(region.get("selected_text") or "")).replace("\n", "<br>")
         body = _table_html(region["table"])
-    elif len(entries) > 1:
-        # 구분값마다 어느 줄이 걸렸는지 보여야 경계 판단을 검수할 수 있다.
-        rows = []
-        for entry in entries:
-            name = (
-                f"<b>{html.escape(str(entry['label']))}</b>" if entry.get("label")
-                else "<i>미분류</i>"
-            )
-            text = html.escape(str(entry.get("text") or "")).replace("\n", "<br>")
-            rows.append(f"<div class='span'>{name}<div class='text'>{text}</div></div>")
-        body = "".join(rows)
+        body += (
+            "<details><summary>최종 선택 텍스트</summary>"
+            f"<div class='text'>{selected}</div></details>"
+        )
     else:
         text = html.escape(str(region.get("selected_text") or "")).replace("\n", "<br>")
         body = f"<div class='text'>{text or '<i>(빈 텍스트)</i>'}</div>"
 
-    reason = region.get("selection_reason")
-    note = (
-        f"<div class='note'>{html.escape(str(reason))}</div>"
-        if reason and not any(entry.get("label") for entry in entries) else ""
-    )
     return (
         f"<li class='region' id='r-{html.escape(str(region['region_id']))}' "
         f"data-rid='{html.escape(str(region['region_id']))}'>"
-        f"<div class='head'><span class='seq'>{index}</span>"
-        f"<span class='rid'>{html.escape(str(region['region_id']))}</span>"
-        f"{''.join(chips)}</div>{body}{note}</li>"
+        f"<div class='head'><span class='rid'>{html.escape(str(region['region_id']))}</span>"
+        f"{''.join(chips)}</div>{body}</li>"
     )
 
 
@@ -162,7 +147,7 @@ def _boxes_svg(page: dict[str, Any], width: int, height: int) -> str:
     parts = [
         f"<svg viewBox='0 0 {width} {height}' preserveAspectRatio='none' class='overlay'>"
     ]
-    for index, region in enumerate(page["regions"], start=1):
+    for region in page["regions"]:
         box = region.get("bbox")
         if not box:
             continue
@@ -175,31 +160,7 @@ def _boxes_svg(page: dict[str, Any], width: int, height: int) -> str:
             f"<rect x='{x0}' y='{y0}' width='{max(1.0, x1 - x0)}' "
             f"height='{max(1.0, y1 - y0)}' stroke='{color}' fill='{color}' />"
             f"<text x='{x0 + 3}' y='{y0 + font}' fill='{color}' "
-            f"font-size='{font}'>{index}</text></g>"
-        )
-    # 구분값이 여럿인 영역은 구간 경계를 점선으로 겹쳐 그린다. 영역을 쪼개지
-    # 않기로 했으니, 어디까지가 어느 구분값인지 화면에서 보여야 검수할 수 있다.
-    for region in page["regions"]:
-        entries = region.get("labels") or []
-        if len(entries) < 2:
-            continue
-        for entry in entries:
-            box = entry.get("bbox")
-            if not box:
-                continue
-            x0, y0, x1, y1 = (float(v) for v in box)
-            parts.append(
-                f"<rect class='span' x='{x0}' y='{y0}' "
-                f"width='{max(1.0, x1 - x0)}' height='{max(1.0, y1 - y0)}' />"
-            )
-    for line in page.get("unassigned_text") or []:
-        box = line.get("bbox")
-        if not box:
-            continue
-        x0, y0, x1, y1 = (float(v) for v in box)
-        parts.append(
-            f"<rect class='orphan' x='{x0}' y='{y0}' "
-            f"width='{max(1.0, x1 - x0)}' height='{max(1.0, y1 - y0)}' />"
+            f"font-size='{font}'>{rid}</text></g>"
         )
     parts.append("</svg>")
     return "".join(parts)
@@ -210,28 +171,28 @@ def _summary_html(document: dict[str, Any], page: dict[str, Any]) -> str:
     rows = [
         ("Region", len(regions)),
         ("표", sum(1 for r in regions if r.get("table"))),
-        ("복구", sum(1 for r in regions if r.get("origin") == "recovery")),
-        ("라벨 없음", sum(1 for r in regions if not r.get("label"))),
+        ("복수 라벨", sum(1 for r in regions if len(r.get("labels") or []) > 1)),
+        ("라벨 없음", sum(1 for r in regions if not r.get("labels"))),
         ("검수 필요", sum(1 for r in regions if r.get("needs_review"))),
-        ("미배정 줄", len(page.get("unassigned_text") or [])),
     ]
     cells = "".join(
         f"<div class='stat'><b>{value}</b><span>{html.escape(name)}</span></div>"
         for name, value in rows
     )
     templates = []
-    for product_id, item in (document.get("product_templates") or {}).items():
+    for item in document.get("review_units") or []:
+        product_id = str(item.get("product_id") or "unknown")
         name = item.get("product_name")
         templates.append(
             f"<tr><td><span class='chip' style='background:{_color(product_id)}'>"
             f"{html.escape(product_id)}</span></td>"
             f"<td>{html.escape(str(name or '—'))}</td>"
             f"<td>{html.escape(str(item.get('template_id') or '—'))}</td>"
-            f"<td>{len(item.get('labels') or [])}개</td></tr>"
+            f"<td>{len(item.get('region_ids') or [])}개</td></tr>"
         )
     table = (
         "<table class='meta'><tr><th>상품</th><th>이름</th><th>템플릿</th>"
-        f"<th>허용 구분값</th></tr>{''.join(templates)}</table>"
+        f"<th>Region</th></tr>{''.join(templates)}</table>"
         if templates else ""
     )
     return f"<div class='stats'>{cells}</div>{table}"
@@ -259,18 +220,7 @@ def build(run: Path, title: str) -> str:
             tabs.append(
                 f"<button class='tab' data-key='{key}'>{label}</button>"
             )
-            regions = "".join(
-                _region_html(region, index)
-                for index, region in enumerate(page["regions"], start=1)
-            )
-            orphans = "".join(
-                f"<li class='orphan-row'>{html.escape(str(line.get('selected_text') or ''))}</li>"
-                for line in page.get("unassigned_text") or []
-            )
-            orphan_block = (
-                f"<h3>미배정 줄 {len(page.get('unassigned_text') or [])}개</h3>"
-                f"<ul class='orphans'>{orphans}</ul>" if orphans else ""
-            )
+            regions = "".join(_region_html(region) for region in page["regions"])
             panes.append(
                 f"<section class='pane' data-key='{key}'>"
                 f"{_summary_html(document, page)}"
@@ -278,8 +228,7 @@ def build(run: Path, title: str) -> str:
                 f"<div class='left'><div class='canvas'>"
                 f"<img src='{uri}' alt='{html.escape(source_file)}'>"
                 f"{_boxes_svg(page, width, height)}</div></div>"
-                f"<div class='right'><ol class='regions'>{regions}</ol>"
-                f"{orphan_block}</div>"
+                f"<div class='right'><ol class='regions'>{regions}</ol></div>"
                 f"</div></section>"
             )
 

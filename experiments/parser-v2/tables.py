@@ -299,8 +299,19 @@ def build_grid(
         placed[ref] = item
 
     buckets: dict[tuple[int, int], dict[str, Any]] = {}
+    note_buckets: dict[int, list[dict[str, Any]]] = {}
+    invalid_refs: set[str] = set()
     for ref, item in placed.items():
-        key = (int(item.get("row") or 0), int(item.get("col") or 0))
+        row, col = int(item.get("row") or 0), int(item.get("col") or 0)
+        # VLM이 "표는 3행"이라고 해놓고 각주를 row=3,4,5로 반환하는 경우가
+        # 있다. 표 밖의 아래쪽 행은 셀로 버리지 않고 관련 각주로 보존한다.
+        if row >= rows and 0 <= col < cols:
+            note_buckets.setdefault(row, []).append(by_ref[ref])
+            continue
+        if row < 0 or row >= rows or col < 0 or col >= cols:
+            invalid_refs.add(ref)
+            continue
+        key = (row, col)
         cell = buckets.setdefault(key, {
             "row": key[0], "col": key[1],
             "is_header": bool(item.get("is_header")),
@@ -327,11 +338,26 @@ def build_grid(
     if not cells:
         return None
 
+    notes = []
+    for row in sorted(note_buckets):
+        ordered = sorted(note_buckets[row], key=lambda line: (_bbox(line)[1], _bbox(line)[0]))
+        notes.append({
+            "text": " ".join(
+                str(line.get("text") or "").strip() for line in ordered
+                if str(line.get("text") or "").strip()
+            ),
+            "line_refs": [str(line["line_ref"]) for line in ordered],
+            "bbox": _union([_bbox(line) for line in ordered]),
+        })
+
     grid = {"rows": rows, "cols": cols}
     return {
         "grid": grid,
         "cells": cells,
-        "unplaced_line_refs": [ref for ref in by_ref if ref not in placed],
+        "notes": notes,
+        "unplaced_line_refs": [
+            ref for ref in by_ref if ref not in placed or ref in invalid_refs
+        ],
         "confidence": float(result.get("confidence") or 0.0),
         "analysis": str(result.get("analysis") or ""),
         "text_grid": _render(grid, cells),
@@ -342,6 +368,7 @@ def build_grid(
 
 def merge_regions(
     regions: list[dict[str, Any]], *, region_id: str,
+    anchor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """흩어진 복구 Region을 표 Region 하나로 합친다.
 
@@ -350,7 +377,7 @@ def merge_regions(
     regions = sorted(regions, key=lambda r: ((r.get("bbox") or [0, 0])[1], (r.get("bbox") or [0, 0])[0]))
     lines = [line for region in regions for line in region.get("lines") or []]
     lines.sort(key=lambda line: (_bbox(line)[1], _bbox(line)[0]))
-    merged = copy.deepcopy(regions[0])
+    merged = copy.deepcopy(anchor or regions[0])
     # 맨 앞 Region 이 `unknown` 이라고 나머지의 소속까지 버리면 안 된다.
     owned = [
         str(region.get("product_id")) for region in regions

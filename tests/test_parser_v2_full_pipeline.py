@@ -79,12 +79,11 @@ def test_p3_preserves_region_and_unassigned_bboxes_for_highlighting():
                 "text": "대출대상 직장인",
                 "text_source": "ocr_pdf_recovery",
                 "product_id": "product_1",
-                "semantic_label": "대출대상",
+                "semantic_labels": ["대출대상"],
                 "bbox_source": "ocr_pdf_lines",
                 "bbox_quality": "exact",
                 "origin": "recovery",
                 "needs_review": False,
-                "mixed_gubun": False,
                 "lines": [{"line_ref": "p1/unassigned/L001", "text": "대출대상 직장인"}],
             }],
             "unassigned_lines": [{
@@ -98,23 +97,19 @@ def test_p3_preserves_region_and_unassigned_bboxes_for_highlighting():
 
     p3 = export_v2.build_p3(export_v2.build_p1(document))
 
-    assert p3["location_index"]["p1_x001"]["bbox"] == [100, 200, 900, 400]
-    assert p3["pages"][0]["regions"][0]["scope"]["product_id"] == "product_1"
-    # 구분값 하나짜리 영역도 라벨 항목이 자기 line_refs 와 bbox 를 갖는다.
-    # 여럿일 때와 같은 모양이라 심의 쪽에서 경우를 나눌 필요가 없다.
-    assert p3["pages"][0]["regions"][0]["labels"] == [{
-        "span_id": "p1_x001#01",
-        "label": "대출대상",
-        "text": "대출대상 직장인",
-        "line_refs": ["p1/unassigned/L001"],
-        "bbox": [100, 200, 900, 400],
-        "bbox_source": "ocr_pdf_lines",
-    }]
-    assert p3["pages"][0]["regions"][0]["layout"]["label"] is None
-    assert p3["pages"][0]["unassigned_text"][0]["bbox"] == [100, 500, 500, 530]
-    assert p3["pages"][0]["products"][0]["name"] == "샘플대출"
-    assert p3["label_index"][0]["references"][0]["region_id"] == "p1_x001"
-    assert "evidence_region_ids" in p3["review_result_contract"]["required_fields"]
+    region = p3["pages"][0]["regions"][0]
+    assert region["region_id"] == "p1_x001"
+    assert region["bbox"] == [100, 200, 900, 400]
+    assert region["product_id"] == "product_1"
+    assert region["labels"] == ["대출대상"]
+    assert region["selected_text"] == "대출대상 직장인"
+    assert p3["pages"][0]["canvas"] == [1000, 1500]
+    assert "location_index" not in p3
+    assert "label_index" not in p3
+    assert "unassigned_text" not in p3["pages"][0]
+    assert p3["review_result_contract"]["required_fields"] == [
+        "result", "reason", "region_ids",
+    ]
 
 
 def test_decorative_vlm_decision_never_deletes_ocr_text_or_bbox():
