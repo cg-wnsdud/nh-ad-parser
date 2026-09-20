@@ -14,6 +14,7 @@ from PIL import Image
 from nh_parser.review.catalog import load_catalog
 from nh_parser.vlm import client as vlm_client
 
+import reading
 import tables
 from export_v2 import build_p1, build_p3
 from recovery import build_recovery_candidates
@@ -486,6 +487,14 @@ def _write_stage_views(documents: list[dict[str, Any]], out: Path) -> None:
                 "status": page.get("semantic_status"),
                 "analysis": page.get("semantic_analysis"),
                 "label_analysis": page.get("label_analysis"),
+                "reading_stats": copy.deepcopy(page.get("reading_stats") or {}),
+                "region_readings": [
+                    {"region_id": region["region_id"],
+                     "status": region.get("reading_status"),
+                     **copy.deepcopy(region.get("vlm_reading") or {})}
+                    for region in page.get("regions") or []
+                    if region.get("vlm_reading")
+                ],
                 "table_areas": copy.deepcopy(page.get("table_areas") or []),
                 "semantic_bands": copy.deepcopy(page.get("semantic_bands") or []),
                 "region_decisions": [
@@ -522,6 +531,7 @@ def run_full_pipeline(
     """기준 OCR 결과에 fc87 Gemma 의미 판정을 붙이고 P1/P3를 저장한다."""
     vlm_client.reset_stats()
     started = time.time()
+    read_scope = reading.scope_from_env()
     media = _media_map(tasks, media_dir)
     catalog = load_catalog()
     p1_documents, p3_documents = [], []
@@ -558,6 +568,10 @@ def run_full_pipeline(
             # 표 구조는 라벨링보다 먼저 복원한다. 라벨러가 셀 낱개가 아니라
             # 표 하나를 보게 해야 구분값을 한 번만 붙인다.
             _place_tables(page, images[int(page["page_no"])])
+            # 영역 판독도 라벨링 앞이다. 깨진 텍스트로 라벨을 정하면 엉뚱한
+            # 구분값이 붙는다 — `2. 대출성상품` p1_r025 는 `)` 한 글자로
+            # `상품명` 라벨을 받았다.
+            reading.read_page(page, images[int(page["page_no"])], scope=read_scope)
             page["semantic_status"] = "complete"
 
         # 2단계 — 상품별 템플릿. 소유권이 나와야 상품군을 알 수 있으므로 여기서 푼다.
@@ -583,9 +597,15 @@ def run_full_pipeline(
     _write_json(out / "05-p1.json", p1_documents)
     _write_json(out / "06-p3.json", p3_documents)
     _append_p3_label_studio(tasks, p3_documents, out)
+    totals: dict[str, int] = {}
+    for document in p1_documents:
+        for page in document.get("pages") or []:
+            for key, value in (page.get("reading_stats") or {}).items():
+                totals[key] = totals.get(key, 0) + value
     stats = {
         "elapsed_seconds": round(time.time() - started, 3),
         "by_schema": copy.deepcopy(vlm_client.STATS),
+        "region_reading": {"scope": read_scope, **totals},
     }
     _write_json(out / "vlm-stats.json", stats)
     manifest_path = out / "manifest.json"
