@@ -242,9 +242,6 @@ def _promote_vlm_table_areas(page: dict[str, Any]) -> list[dict[str, Any]]:
     for area in areas:
         if str(area.get("kind") or "table") != "table":
             continue
-        box = tables.area_to_bbox(area, page["canvas"])
-        if not box:
-            continue
         # 복구 Region 만 보면 안 된다 — 표 한 칸이 PaddleX Region 으로 잡혀 있을
         # 수 있다. 실측: `2. 카드상품` 의 5칸 중 2칸이 PaddleX Region 이라 복구
         # 3칸만으로는 줄 수 하한에 걸려 통째로 버려졌다.
@@ -254,10 +251,11 @@ def _promote_vlm_table_areas(page: dict[str, Any]) -> list[dict[str, Any]]:
             and region.get("bbox")
             and (region.get("lines") or [])
         ]
-        seeds = [
-            region for region in pool
-            if tables.inside_ratio(region["bbox"], box) >= 0.6
-        ]
+        # VLM 은 좌표가 아니라 목록에 있는 ID 를 고른다. 좌표 추정은 실행마다
+        # 크게 흔들려 같은 표를 놓쳤다 — 한 번은 [10,55,40,65] 로 잘 찍고 다음
+        # 실행에서는 [46,56,58,65] 로 찍어 실제 표와 3% 만 겹쳤다.
+        wanted = {str(value) for value in (area.get("member_ids") or [])}
+        seeds = [region for region in pool if str(region["region_id"]) in wanted]
         if len(seeds) < MIN_TABLE_CELLS:
             continue
         inside = tables.grow_cells(seeds, pool)

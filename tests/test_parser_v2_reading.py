@@ -147,3 +147,14 @@ def test_a_single_digit_difference_is_flagged():
     # 정본은 여전히 OCR 이고 VLM 판독은 후보로만 남는다.
     assert region["text"] == "기본금리 연 2.25%"
     assert region["text_candidates"]["vlm_reading"] == "기본금리 연 2.26%"
+
+
+def test_stray_json_tail_is_stripped_from_the_text():
+    """모델이 JSON 을 닫고 이어 쓴 잡담이 정본 후보에 섞이면 안 된다.
+
+    실측(2026-09-20): `NH농협카드"} (Note: The user requested to transc…`
+    """
+    assert reading.clean_text('NH농협카드"} (Note: The prompt asks to…') == "NH농협카드"
+    assert reading.clean_text("정상 텍스트") == "정상 텍스트"
+    # 값 안의 따옴표가 정상인 경우까지 잘라내지 않는다.
+    assert reading.clean_text('연회비 1만2천원') == "연회비 1만2천원"

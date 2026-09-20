@@ -49,10 +49,15 @@ SCOPES = ("all", "targeted", "off")
 _SCHEMA = {
     "type": "object",
     "properties": {
+        # 설명할 자리를 **먼저** 준다. 없으면 모델이 JSON 을 닫고 그 뒤에 계속
+        # 말해서 그 문장이 text 값에 섞인다 — 실측(2026-09-20):
+        # `NH농협카드"} (Note: The user requested to transc…`.
+        # 같은 이유로 응답이 5,100자까지 늘어 10건이 파싱 실패했다.
+        "analysis": {"type": "string"},
         "text": {"type": "string"},
         "confidence": {"type": "number"},
     },
-    "required": ["text", "confidence"],
+    "required": ["analysis", "text", "confidence"],
     "additionalProperties": False,
 }
 
@@ -63,7 +68,8 @@ _PROMPT = """첨부 이미지는 광고 문서에서 잘라낸 영역 하나입�
 - 줄바꿈은 보이는 대로 유지하세요.
 - 로고·아이콘 안의 글자도 읽을 수 있으면 적으세요.
 - 읽을 수 없거나 글자가 없으면 빈 문자열을 반환하세요.
-- 없는 내용을 채우거나 요약하지 마세요. 설명도 붙이지 마세요.
+- 없는 내용을 채우거나 요약하지 마세요.
+- 하고 싶은 말은 analysis 에 한 문장으로 쓰고, text 에는 **글자만** 담으세요.
 """
 
 
@@ -132,6 +138,8 @@ def read_region(image: Image.Image, region: dict[str, Any]) -> dict[str, Any] | 
     crop = _crop(image, region["bbox"])
     if crop is None:
         return None
+    # 영역 길이에 맞춰 예산을 잡는다. 실측 최장 Region 텍스트가 697자였다.
+    budget = min(6000, 1200 + 3 * len(str(region.get("text") or "")))
     result = vlm_client.chat_json(
         [
             {"type": "text", "text": _PROMPT},
@@ -139,12 +147,27 @@ def read_region(image: Image.Image, region: dict[str, Any]) -> dict[str, Any] | 
         ],
         schema_name="parser_v2_region_reading",
         schema=_SCHEMA,
-        max_tokens=2000,
+        max_tokens=budget,
     )
     return {
-        "text": str(result.get("text") or "").strip(),
+        "text": clean_text(result.get("text")),
         "confidence": float(result.get("confidence") or 0.0),
+        "analysis": str(result.get("analysis") or "")[:300],
     }
+
+
+def clean_text(value: Any) -> str:
+    """모델이 JSON 을 닫고 이어 쓴 잡담을 잘라낸다.
+
+    analysis 자리를 준 뒤에도 가끔 새어 나온다. 정본 후보로 쓰이는 값이라
+    방어적으로 한 번 더 자른다.
+    """
+    text = str(value or "")
+    for marker in ('"}', '"]'):
+        index = text.find(marker)
+        if index > 0:
+            text = text[:index]
+    return text.strip()
 
 
 def apply_reading(region: dict[str, Any], reading: dict[str, Any]) -> str:

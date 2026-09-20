@@ -153,11 +153,18 @@ def _ownership_schema(region_ids: list[str], candidate_ids: list[str]) -> dict[s
                 "items": {
                     "type": "object",
                     "properties": {
-                        "approx_bbox_pct": {
+                        # 좌표가 아니라 **ID** 를 받는다. 백분율을 요구해도 모델이
+                        # 픽셀을 주거나(11건 중 4건) 실행마다 크게 흔들린다 —
+                        # 실측(2026-09-20): 같은 표를 한 번은 [10,55,40,65],
+                        # 다음 실행에서는 [46,56,58,65] 로 찍어 실제 표와 3% 만
+                        # 겹쳤다. 목록에 있는 ID 를 고르게 하면 추정이 사라진다.
+                        "member_ids": {
                             "type": "array",
-                            "items": {"type": "number"},
-                            "minItems": 4,
-                            "maxItems": 4,
+                            "minItems": 2,
+                            "items": {
+                                "type": "string",
+                                "enum": (region_ids + candidate_ids) or ["__none__"],
+                            },
                         },
                         # 시각적으로는 둘 다 격자라 기하학으로 구분할 수 없다.
                         # 합칠지 말지는 의미 판정이므로 여기서 받는다.
@@ -165,7 +172,7 @@ def _ownership_schema(region_ids: list[str], candidate_ids: list[str]) -> dict[s
                         "note": {"type": "string"},
                         "confidence": {"type": "number"},
                     },
-                    "required": ["approx_bbox_pct", "kind", "note", "confidence"],
+                    "required": ["member_ids", "kind", "note", "confidence"],
                     "additionalProperties": False,
                 },
             },
@@ -239,8 +246,8 @@ def analyze_page_ownership(
    - page_common: 회사명·심의번호 등 공통 영역
    - decorative: 심의 텍스트로 쓰지 않는 순수 장식
    - needs_review: 확정 불가
-4. table_areas: 행과 열로 나란히 놓인 영역이 있으면 대략 위치를 **페이지 대비
-   백분율** [x0, y0, x1, y1]로 알려주세요(0~100). 픽셀 값이 아닙니다.
+4. table_areas: 행과 열로 나란히 놓인 영역이 있으면, 거기에 속한 **REGION/CANDIDATE
+   ID를 member_ids에 모두** 적으세요. 좌표는 쓰지 않습니다.
    PaddleX가 표로 잡지 못한 영역도 보이는 대로 적고, kind를 반드시 구분하세요.
    - table: 머리글이 있고 칸 전체가 **하나의 항목**을 설명하는 진짜 표.
      예) `구분 | 적립율` 머리글 아래 값이 들어찬 표

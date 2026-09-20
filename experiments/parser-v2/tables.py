@@ -11,8 +11,8 @@ OCR 줄만 남아 낱개 영역으로 흩어진다.
     B. 아무 Region에도 못 들어간 줄          → 격자면 하나로 묶는다
     C. table이 아닌 라벨이 붙은 격자형 Region → 다시 읽는다
 
-VLM은 **셀 배치만** 한다. 좌표는 배치된 OCR 줄의 합집합이고 텍스트도 OCR 것이다.
-모델이 좌표나 문구를 새로 만들 자리가 없다.
+VLM은 **어느 Region 이 한 표인지 고르고 셀을 배치**할 뿐이다. 좌표는 배치된 OCR
+줄의 합집합이고 텍스트도 OCR 것이다. 모델이 좌표나 문구를 새로 만들 자리가 없다.
 """
 from __future__ import annotations
 
@@ -142,56 +142,15 @@ def table_candidates(
     return output
 
 
-def area_to_bbox(area: dict[str, Any], canvas: list[int]) -> list[int] | None:
-    """VLM이 준 근사 위치를 페이지 픽셀 bbox로 바꾼다.
-
-    이 bbox는 **어디를 볼지 고르는 데만** 쓰고 결과 좌표로 쓰지 않는다. 최종
-    좌표는 그 안에서 찾은 OCR 줄에서 나온다.
-
-    백분율을 달라고 했지만 모델이 픽셀을 주기도 한다 — 실측(2026-09-20, 11건 중
-    4건): `[30, 250, 95, 850]`, `[550, 1400, 1000, 1800]`. 100을 넘는 값이 있으면
-    픽셀로 보고 그대로 쓴다. 0~100으로 잘라내면 높이가 0이 돼 통째로 버려진다.
-    """
-    values = [float(value) for value in (area.get("approx_bbox_pct") or [])]
-    if len(values) != 4:
-        return None
-    width, height = int(canvas[0]), int(canvas[1])
-    x0, y0, x1, y1 = values
-    if max(values) > 100.0:
-        box = [int(min(x0, x1)), int(min(y0, y1)), int(max(x0, x1)), int(max(y0, y1))]
-    else:
-        box = [
-            int(max(0.0, min(x0, x1)) / 100 * width),
-            int(max(0.0, min(y0, y1)) / 100 * height),
-            int(min(100.0, max(x0, x1)) / 100 * width),
-            int(min(100.0, max(y0, y1)) / 100 * height),
-        ]
-    box = [
-        max(0, min(box[0], width)), max(0, min(box[1], height)),
-        max(0, min(box[2], width)), max(0, min(box[3], height)),
-    ]
-    if box[2] - box[0] < 8 or box[3] - box[1] < 8:
-        return None
-    return box
-
-
-def inside_ratio(box: list[int], area: list[int]) -> float:
-    """box 면적 중 area 안에 들어가는 비율."""
-    ix = max(0, min(box[2], area[2]) - max(box[0], area[0]))
-    iy = max(0, min(box[3], area[3]) - max(box[1], area[1]))
-    size = max(1, (box[2] - box[0]) * (box[3] - box[1]))
-    return ix * iy / size
-
-
 def grow_cells(
     seeds: list[dict[str, Any]], pool: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """씨앗 칸에서 시작해 같은 행에 붙어 있는 칸을 끌어온다.
 
-    VLM 의 근사 위치는 표 가장자리를 덜 덮는 일이 잦다 — 실측(2026-09-20,
-    `2. 카드상품`): 5칸 중 오른쪽 1칸이 지목 범위 밖 33% 만 겹쳐 빠졌다. 범위
-    자체를 넓히는 대신, **씨앗과 세로로 겹치고 가로로 붙어 있는 칸**만 더한다.
-    떨어져 있는 다른 단은 가로 간격에서 걸러진다.
+    VLM 이 고른 ID 는 표의 모든 칸을 다 담지 못하기도 한다. **씨앗과 세로로
+    겹치고 가로로 붙어 있는 칸**만 더해 빠진 칸을 메운다. 떨어져 있는 다른 단은
+    가로 간격에서 걸러진다 — 실측(2026-09-20, `2. 카드상품`): 표에서 510px
+    떨어진 `p1_r024` 는 세로로 58% 겹쳐도 들어오지 않는다.
     """
     if not seeds:
         return []

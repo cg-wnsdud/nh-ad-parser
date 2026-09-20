@@ -169,8 +169,8 @@ def test_vlm_table_area_promotes_scattered_recovery_regions_without_new_bbox():
         "page_no": 1,
         "canvas": [1654, 2339],
         "table_areas": [{
-            "approx_bbox_pct": [33.0, 78.0, 93.0, 82.5],
-            "note": "담보명/보장금액 표", "confidence": 0.9,
+            "member_ids": [f"p1_x{i:03d}" for i in range(1, 13)],
+            "kind": "table", "note": "담보명/보장금액 표", "confidence": 0.9,
         }],
         "regions": [
             {"region_id": f"p1_x{index:03d}", "origin": "recovery", "kind": "text",
@@ -198,7 +198,8 @@ def test_vlm_table_area_is_ignored_when_too_few_lines_sit_inside():
     page = {
         "page_no": 1,
         "canvas": [1000, 1000],
-        "table_areas": [{"approx_bbox_pct": [0, 0, 100, 100], "note": "", "confidence": 0.9}],
+        "table_areas": [{"member_ids": ["p1_x001", "p1_x002"],
+                         "kind": "table", "note": "", "confidence": 0.9}],
         "regions": [
             {"region_id": "p1_x001", "origin": "recovery", "kind": "text",
              "bbox": [10, 10, 100, 30], "lines": [_line("L01", 10, 10, 100, 30, "가")]},
@@ -235,8 +236,9 @@ def _card_table_regions():
 def test_vlm_table_area_merges_paddlex_cells_too():
     page = {
         "page_no": 1, "canvas": [4032, 4032],
-        "table_areas": [{"approx_bbox_pct": [10, 55, 40, 65], "kind": "table",
-                         "note": "GS리테일 적립율 표", "confidence": 1.0}],
+        "table_areas": [{"member_ids": ["p1_x001", "p1_x003", "p1_x002"],
+                         "kind": "table", "note": "GS리테일 적립율 표",
+                         "confidence": 1.0}],
         "regions": _card_table_regions(),
     }
 
@@ -259,8 +261,9 @@ def test_field_list_areas_are_never_merged():
     """항목명–값 나열은 행마다 구분값이 달라 합치면 라벨이 하나만 남는다."""
     page = {
         "page_no": 1, "canvas": [4032, 4032],
-        "table_areas": [{"approx_bbox_pct": [10, 55, 40, 65], "kind": "field_list",
-                         "note": "대출대상~필요서류", "confidence": 1.0}],
+        "table_areas": [{"member_ids": ["p1_x001", "p1_x003", "p1_x002"],
+                         "kind": "field_list", "note": "대출대상~필요서류",
+                         "confidence": 1.0}],
         "regions": _card_table_regions(),
     }
 
@@ -273,26 +276,13 @@ def test_areas_spanning_two_products_are_not_merged():
     regions[1]["product_id"] = "product_2"
     page = {
         "page_no": 1, "canvas": [4032, 4032],
-        "table_areas": [{"approx_bbox_pct": [10, 55, 40, 65], "kind": "table",
-                         "note": "", "confidence": 1.0}],
+        "table_areas": [{"member_ids": ["p1_x001", "p1_x003", "p1_r011"],
+                         "kind": "table", "note": "", "confidence": 1.0}],
         "regions": regions,
     }
 
     assert full_pipeline._promote_vlm_table_areas(page) == []
 
-
-def test_pixel_valued_areas_are_accepted():
-    """백분율을 요구했지만 모델이 픽셀을 주기도 한다 — 실측 11건 중 4건."""
-    canvas = [1654, 2339]
-    pct = tables.area_to_bbox(
-        {"approx_bbox_pct": [30, 60, 95, 80]}, canvas)
-    pixels = tables.area_to_bbox(
-        {"approx_bbox_pct": [550, 1400, 1000, 1800]}, canvas)
-
-    assert pct == [496, 1403, 1571, 1871]
-    assert pixels == [550, 1400, 1000, 1800]
-    # 0~100 으로 잘라내면 높이가 0이 돼 통째로 버려졌다.
-    assert pixels is not None
 
 
 def test_growing_does_not_reach_across_to_another_column_block():
@@ -307,8 +297,8 @@ def test_growing_does_not_reach_across_to_another_column_block():
     }
     page = {
         "page_no": 1, "canvas": [4032, 4032],
-        "table_areas": [{"approx_bbox_pct": [10, 55, 40, 65], "kind": "table",
-                         "note": "", "confidence": 1.0}],
+        "table_areas": [{"member_ids": ["p1_x001", "p1_x003", "p1_x002"],
+                         "kind": "table", "note": "", "confidence": 1.0}],
         "regions": [*regions, far],
     }
 
