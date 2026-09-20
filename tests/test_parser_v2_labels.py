@@ -62,6 +62,14 @@ def test_validate_labels_keeps_allowed_multiple_labels_and_deduplicates():
     assert result["region_labels"][0]["labels"] == ["가입대상", "가입금액"]
 
 
+def test_fc87_label_schema_avoids_unsupported_unique_items_constraint():
+    schema = semantic._label_schema(["p1_r001"], ["가입대상", "가입금액"])
+    labels = schema["properties"]["region_labels"]["items"]["properties"]["labels"]
+
+    assert "uniqueItems" not in labels
+    assert labels["maxItems"] == 2
+
+
 def test_label_pages_attaches_multiple_labels_without_children(monkeypatch):
     page = {"page_no": 1, "regions": [_region()]}
 

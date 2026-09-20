@@ -481,7 +481,8 @@ def _label_schema(region_ids: list[str], labels: list[str]) -> dict[str, Any]:
                         "labels": {
                             "type": "array",
                             "items": {"type": "string", "enum": labels or ["__none__"]},
-                            "uniqueItems": True,
+                            # fc87의 구조화 출력 엔진은 JSON Schema `uniqueItems`를
+                            # HTTP 400으로 거부한다. 중복은 validate_labels에서 제거한다.
                             "maxItems": len(labels),
                         },
                         "confidence": {"type": "number"},
