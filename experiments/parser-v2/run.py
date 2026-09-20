@@ -50,7 +50,7 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--max-side", type=int, default=2500)
     parser.add_argument(
         "--with-vlm", action="store_true",
-        help="기존 fc87 Gemma로 상품 소유권·복구·단일 라벨을 판정하고 P1/P3까지 생성",
+        help="기존 fc87 Gemma로 소유권·텍스트 Judge·복수 라벨을 판정하고 P1/P3까지 생성",
     )
     return parser.parse_args()
 

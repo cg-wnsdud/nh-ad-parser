@@ -1,7 +1,7 @@
 # parser-v2 실험 환경
 
-spark-1118의 서버 파이프라인 YAML 결과에서 시작해 Region 소유권, 상품 그룹, 읽기 순서,
-fc87 Gemma 판독, 템플릿 단일 라벨, P1/P3까지 단계적으로 연결하는 실험 공간이다.
+spark-1118의 서버 파이프라인 YAML 결과에서 시작해 Region 소유권, 상품 그룹, 내부 정렬,
+fc87 Gemma 판독·Judge, 템플릿 복수 라벨, P1/P3까지 단계적으로 연결하는 실험 공간이다.
 
 Region 텍스트는 PaddleX `block_content`와 좌표 기반 OCR/디지털 줄 중 하나를 미리 버리지
 않는다. 대부분 일치하면 `block_content`를 쓰고, 빈 표는 줄로 보완하며, 충돌은 VLM/Judge
@@ -75,18 +75,18 @@ uv run --cache-dir .uv-cache-codex python experiments/parser-v2/run.py `
 추가 산출물은 다음과 같다.
 
 ```text
-03-ownership.json  product_id와 전체·상품별 읽기 순서
+03-ownership.json  product_id와 내부 처리 순서(중간 진단용)
 04-vlm-evidence.json  분류·템플릿·페이지 의미 판정 원문
 05-p1.json       모든 OCR/PDF/VLM 근거와 복구 이력
-06-p3.json       심의 단계 입력: Region별 bbox/product_id/단일 label/selected_text
+06-p3.json       심의 단계 입력: Region별 bbox/product_id/복수 labels/selected_text
 final/*.p3.json  문서별 P3
 vlm-stats.json   fc87 Gemma schema별 호출 수·캐시·시간
-label-studio.json의 `4-p3-semantic` 탭  product_id·단일 라벨·복구 bbox 시각 확인
+label-studio.json의 `4-p3-semantic` 탭  product_id·복수 라벨·Region bbox 시각 확인
 ```
 
 VLM이 어떤 OCR/PDF 텍스트를 `decorative`로 판단해도 해당 텍스트와 bbox를 삭제하지 않는다.
-P3 복구 Region에 `vlm_excluded=true`, `needs_review=true`로 남겨 사람이 오판을 확인할 수
-있게 한다. VLM은 제공된 ID를 선택할 뿐 새로운 bbox를 만들지 않는다.
+상세 판단과 후보는 P1에 남기고 P3에는 같은 `region_id`, 최종 텍스트, bbox와
+`needs_review`만 전달한다. VLM은 제공된 ID를 선택할 뿐 새로운 bbox를 만들지 않는다.
 
 일반 페이지의 의미 판정은 페이지 전체 1회다. OCR 단계에서 긴 페이지로 판정된 입력은
 같은 축을 2~4개 문맥 밴드로 나누며, 각 Region/복구 후보 ID는 중심점 기준으로 정확히 한
@@ -197,10 +197,10 @@ uv run --cache-dir .uv-cache-codex python experiments/parser-v2/summarize.py `
 ## 기준선 확인 뒤의 구현 순서
 
 1. 미배정 줄을 무조건 가까운 영역에 넣지 않고 `붙임/복구 Region/무시` 규칙으로 처리한다.
-2. 한 페이지 문맥을 함께 본 Gemma 호출로 Region마다 `product_id`와 템플릿 라벨 하나를 정한다.
+2. 한 페이지 문맥을 함께 본 Gemma 호출로 Region마다 `product_id`를 정한다.
 3. 일반 페이지는 전체 이미지를 문맥으로 쓰고, 긴 페이지는 저해상도 전체 보기와 타일/Region
    crop을 함께 써 상품 경계를 잃지 않게 한다.
-4. 상품 그룹 안에서만 읽기 순서를 정렬하고 명백한 역전만 고친다.
-5. 1,206개 전부를 다시 읽히지 않고, 충돌 85개와 금리·금액 등 중요 영역만 Reader/Judge로
-   교차 판독한다.
-6. 최종적으로 기존 P1/P3 형식에 `product_id`와 단일 라벨 결과를 연결한다.
+4. 내부 처리에서는 상품 그룹을 고려해 Region 순서를 정리하되 P3에는 별도 순서 필드를 싣지 않는다.
+5. 각 비표 Region을 Reader가 독립 판독하고, OCR/PDF 후보와 다를 때만 Judge가 최종 텍스트를 정한다.
+6. Region을 span으로 나누지 않고 해당하는 템플릿 구분값을 `labels` 배열에 모두 붙인다.
+7. P1에는 모든 근거를 보존하고, P3에는 같은 `region_id`의 최종 텍스트·bbox·복수 라벨만 전달한다.
