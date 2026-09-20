@@ -595,7 +595,8 @@ def _write_stage_views(documents: list[dict[str, Any]], out: Path) -> None:
                 "region_readings": [
                     {"region_id": region["region_id"],
                      "status": region.get("reading_status"),
-                     **copy.deepcopy(region.get("vlm_reading") or {})}
+                     "reader": copy.deepcopy(region.get("vlm_reading") or {}),
+                     "judge": copy.deepcopy(region.get("vlm_judge") or {})}
                     for region in page.get("regions") or []
                     if region.get("vlm_reading")
                 ],

@@ -12,9 +12,9 @@ OCR 은 디자인 문구·스타일 글자에서 무너진다. 실측(2026-09-20
 페이지 전체를 훑어 "빠진 문구"를 찾는 방식은 쓰지 않는다. 같은 9개 파일에서 0건
 나왔다 — 모델이 목록에 없는 것을 스스로 대조하지 못한다. 영역마다 물어야 한다.
 
-**OCR 정본을 VLM 판독으로 덮어쓰지 않는다.** 좌표가 있는 쪽이 OCR 이므로 정본은
-OCR 이고, VLM 은 대조용 후보다. 다만 OCR 이 아무것도 못 읽은 자리는 VLM 판독만이
-유일한 텍스트라 그때만 정본이 되고 `bbox_quality` 로 구분한다.
+Reader가 이미지에서 독립 전사한 뒤 OCR/PDF 후보와 비교한다. 둘이 다르면 두 후보와
+같은 crop을 Judge에게 다시 주고, Judge의 최종 전사를 Region 정본으로 채택한다.
+OCR/PDF 원문과 Reader 결과는 P1 후보에 그대로 남겨 되짚을 수 있게 한다.
 """
 from __future__ import annotations
 
@@ -58,6 +58,18 @@ _SCHEMA = {
         "confidence": {"type": "number"},
     },
     "required": ["analysis", "text", "confidence"],
+    "additionalProperties": False,
+}
+
+_JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "analysis": {"type": "string"},
+        "text": {"type": "string"},
+        "confidence": {"type": "number"},
+        "source": {"type": "string", "enum": ["parser", "reader", "corrected"]},
+    },
+    "required": ["analysis", "text", "confidence", "source"],
     "additionalProperties": False,
 }
 
@@ -156,6 +168,53 @@ def read_region(image: Image.Image, region: dict[str, Any]) -> dict[str, Any] | 
     }
 
 
+def judge_region(
+    image: Image.Image,
+    region: dict[str, Any],
+    reading: dict[str, Any],
+) -> dict[str, Any] | None:
+    """OCR/PDF와 Reader가 다를 때 이미지를 기준으로 최종 전사를 만든다."""
+    crop = _crop(image, region["bbox"])
+    if crop is None:
+        return None
+    parser_text = str(region.get("text") or "")
+    reader_text = str(reading.get("text") or "")
+    prompt = f"""첨부 이미지는 광고 문서에서 잘라낸 영역 하나입니다.
+
+아래 두 전사 후보를 참고하되 **이미지에 실제로 보이는 글자**를 최종 기준으로 삼아
+정확한 전체 텍스트를 반환하세요.
+
+- 후보 A (OCR/PDF 파서):
+{parser_text}
+
+- 후보 B (독립 VLM Reader):
+{reader_text}
+
+규칙:
+- 글자를 요약하거나 설명하지 말고 보이는 순서와 줄바꿈을 최대한 유지하세요.
+- 숫자, 금리, 날짜, 괄호, 주석 기호를 임의로 고치거나 만들지 마세요.
+- 두 후보가 모두 틀리면 이미지에 맞게 고친 텍스트를 반환하세요.
+- source는 A가 맞으면 parser, B가 맞으면 reader, 둘을 고쳤으면 corrected입니다.
+- analysis는 선택 이유 한 문장, text에는 최종 글자만 넣으세요.
+"""
+    budget = min(7000, 1500 + 3 * max(len(parser_text), len(reader_text)))
+    result = vlm_client.chat_json(
+        [
+            {"type": "text", "text": prompt},
+            vlm_client.image_part(crop, box=(1400, 1400), quality=92),
+        ],
+        schema_name="parser_v2_region_reading_judge",
+        schema=_JUDGE_SCHEMA,
+        max_tokens=budget,
+    )
+    return {
+        "text": clean_text(result.get("text")),
+        "confidence": float(result.get("confidence") or 0.0),
+        "source": str(result.get("source") or "corrected"),
+        "analysis": str(result.get("analysis") or "")[:300],
+    }
+
+
 def clean_text(value: Any) -> str:
     """모델이 JSON 을 닫고 이어 쓴 잡담을 잘라낸다.
 
@@ -170,12 +229,12 @@ def clean_text(value: Any) -> str:
     return text.strip()
 
 
-def apply_reading(region: dict[str, Any], reading: dict[str, Any]) -> str:
-    """판독 결과를 Region 에 반영하고 어떤 판정이었는지 돌려준다.
-
-    정본을 바꾸는 경우는 **OCR 이 아무것도 못 읽었을 때 하나뿐**이다. 그 외에는
-    OCR 을 유지하고 VLM 판독을 후보로 남긴다 — 줄 단위 좌표가 있는 쪽이 OCR 이다.
-    """
+def apply_reading(
+    region: dict[str, Any],
+    reading: dict[str, Any],
+    judge: dict[str, Any] | None = None,
+) -> str:
+    """Reader/Judge 결과를 반영하고 VLM 최종 전사를 Region 정본으로 선택한다."""
     ocr_text = str(region.get("text") or "")
     vlm_text = str(reading.get("text") or "")
     score = agreement(ocr_text, vlm_text)
@@ -184,22 +243,44 @@ def apply_reading(region: dict[str, Any], reading: dict[str, Any]) -> str:
         "confidence": reading.get("confidence"),
         "agreement": round(score, 4),
     }
+    region.setdefault("text_candidates", {})["parser_selected"] = ocr_text or None
     region.setdefault("text_candidates", {})["vlm_reading"] = vlm_text or None
 
-    if not _normalized(ocr_text) and _normalized(vlm_text):
-        # OCR 이 못 읽은 디자인 문구. 줄 단위 좌표가 없으므로 Region bbox 를 쓰고
-        # 품질을 낮춰 표시한다.
-        region["text"] = vlm_text
-        region["text_source"] = "vlm_only"
-        region["bbox_quality"] = "region"
-        region["needs_review"] = True
-        return "vlm_only"
     if not _normalized(vlm_text):
         region["reading_status"] = "vlm_blank"
         return "vlm_blank"
+    if judge is not None and _normalized(judge.get("text")):
+        final_text = str(judge["text"])
+        region["vlm_judge"] = {
+            "text": final_text,
+            "confidence": judge.get("confidence"),
+            "source": judge.get("source"),
+            "analysis": judge.get("analysis"),
+        }
+        region["text_candidates"]["vlm_judge"] = final_text
+        region["text"] = final_text
+        region["text_source"] = "vlm_judge"
+        region["reading_status"] = "judge_selected"
+        if float(judge.get("confidence") or 0.0) < 0.7:
+            region["needs_review"] = True
+        if not _normalized(ocr_text):
+            region["bbox_quality"] = "region"
+        return "judge_selected"
+
+    # 두 후보가 일치하면 독립 Reader의 전사를 최종 텍스트로 쓴다. OCR/PDF 후보는
+    # text_candidates에 남아 있으므로 P1에서 언제든 대조할 수 있다.
+    region["text"] = vlm_text
+    region["text_source"] = "vlm_reader"
+    if not _normalized(ocr_text):
+        region["bbox_quality"] = "region"
+        region["needs_review"] = True
+        region["reading_status"] = "vlm_only"
+        return "vlm_only"
     if score >= AGREE:
         region["reading_status"] = "agree"
         return "agree"
+    # Judge를 부르지 못한 경우에도 사용자 선택에 따라 Reader 결과를 정본으로 쓰되,
+    # 불일치 사실은 검수 대상으로 남긴다.
     region["reading_status"] = "disagree"
     region["needs_review"] = True
     return "disagree"
@@ -209,8 +290,9 @@ def read_page(
     page: dict[str, Any], image: Image.Image, *, scope: str = "all",
 ) -> dict[str, int]:
     """페이지의 Region 을 훑어 판독하고 통계를 돌려준다."""
-    stats = {"read": 0, "agree": 0, "disagree": 0, "vlm_only": 0, "vlm_blank": 0,
-             "skipped": 0, "failed": 0}
+    stats = {"read": 0, "agree": 0, "disagree": 0, "judge_selected": 0,
+             "vlm_only": 0, "vlm_blank": 0, "skipped": 0, "failed": 0,
+             "judge_failed": 0}
     for region in page.get("regions") or []:
         if not should_read(region, scope):
             stats["skipped"] += 1
@@ -229,6 +311,15 @@ def read_page(
             stats["skipped"] += 1
             continue
         stats["read"] += 1
-        stats[apply_reading(region, reading)] += 1
+        parser_text = str(region.get("text") or "")
+        reader_text = str(reading.get("text") or "")
+        judge = None
+        if _normalized(reader_text) and agreement(parser_text, reader_text) < AGREE:
+            try:
+                judge = judge_region(image, region, reading)
+            except Exception as exc:  # noqa: BLE001
+                region["vlm_judge"] = {"error": str(exc)[:200]}
+                stats["judge_failed"] += 1
+        stats[apply_reading(region, reading, judge)] += 1
     page["reading_stats"] = stats
     return stats

@@ -1,7 +1,4 @@
-"""영역 판독 — VLM 전사와 OCR 정본의 대조 규칙을 검증한다.
-
-정본을 바꾸는 경우는 OCR 이 아무것도 못 읽었을 때 하나뿐이다.
-"""
+"""영역 판독 — VLM Reader/Judge가 최종 텍스트를 선택하는 규칙을 검증한다."""
 import importlib.util
 import sys
 from pathlib import Path
@@ -26,7 +23,7 @@ def _module(name: str, filename: str):
 reading = _module("parser_v2_reading", "reading.py")
 
 
-def test_matching_reading_keeps_the_ocr_text():
+def test_matching_reading_selects_the_vlm_reader_text():
     region = {"bbox": [0, 0, 10, 10], "text": "가입금액 100만원 이상",
               "text_source": "digital_ocr_lines"}
 
@@ -35,14 +32,13 @@ def test_matching_reading_keeps_the_ocr_text():
 
     assert status == "agree"
     assert region["text"] == "가입금액 100만원 이상"
-    assert region["text_source"] == "digital_ocr_lines"
+    assert region["text_source"] == "vlm_reader"
     assert region.get("needs_review") is not True
     # 대조 근거는 남긴다.
     assert region["text_candidates"]["vlm_reading"] == "가입금액 100만원 이상"
 
 
-def test_disagreement_keeps_ocr_but_flags_review():
-    """좌표가 있는 쪽이 OCR 이므로 정본은 바꾸지 않는다."""
+def test_disagreement_selects_reader_when_judge_is_unavailable_and_flags_review():
     region = {"bbox": [0, 0, 10, 10],
               "text": "※상환능력에비해신용카드사용액이과도할경우,귀하의개인신용평점이그을V",
               "text_source": "paddlex_block_content"}
@@ -54,8 +50,8 @@ def test_disagreement_keeps_ocr_but_flags_review():
     })
 
     assert status == "disagree"
-    assert region["text"].startswith("※상환능력에")
-    assert region["text_source"] == "paddlex_block_content"
+    assert region["text"].startswith("※ 상환능력에")
+    assert region["text_source"] == "vlm_reader"
     assert region["needs_review"] is True
     assert region["vlm_reading"]["agreement"] < reading.AGREE
 
@@ -69,7 +65,7 @@ def test_vlm_only_text_becomes_canonical_with_a_coarser_bbox():
 
     assert status == "vlm_only"
     assert region["text"] == "NH농협은행"
-    assert region["text_source"] == "vlm_only"
+    assert region["text_source"] == "vlm_reader"
     # 줄 단위 좌표가 없으므로 품질을 낮춰 표시한다.
     assert region["bbox_quality"] == "region"
     assert region["needs_review"] is True
@@ -84,6 +80,22 @@ def test_blank_reading_never_erases_the_ocr_text():
     assert status == "vlm_blank"
     assert region["text"] == "기본금리 연 2.25%"
     assert region["text_source"] == "digital_ocr_lines"
+
+
+def test_judge_text_wins_when_reader_and_parser_disagree():
+    region = {"bbox": [0, 0, 10, 10], "text": "기본금리 연 2.25%",
+              "text_source": "digital_ocr_lines"}
+    reader = {"text": "기본금리 연 2.26%", "confidence": 0.9}
+    judge = {"text": "기본금리 연 2.26%", "confidence": 0.98,
+             "source": "reader", "analysis": "이미지 숫자는 6"}
+
+    status = reading.apply_reading(region, reader, judge)
+
+    assert status == "judge_selected"
+    assert region["text"] == "기본금리 연 2.26%"
+    assert region["text_source"] == "vlm_judge"
+    assert region["text_candidates"]["parser_selected"] == "기본금리 연 2.25%"
+    assert region["vlm_judge"]["source"] == "reader"
 
 
 def test_table_regions_are_never_re_read():
@@ -144,8 +156,9 @@ def test_a_single_digit_difference_is_flagged():
 
     assert status == "disagree"
     assert region["needs_review"] is True
-    # 정본은 여전히 OCR 이고 VLM 판독은 후보로만 남는다.
-    assert region["text"] == "기본금리 연 2.25%"
+    # Judge가 없으면 Reader를 선택하되 OCR 후보도 P1에 남긴다.
+    assert region["text"] == "기본금리 연 2.26%"
+    assert region["text_candidates"]["parser_selected"] == "기본금리 연 2.25%"
     assert region["text_candidates"]["vlm_reading"] == "기본금리 연 2.26%"
 
 
