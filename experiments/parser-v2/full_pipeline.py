@@ -262,9 +262,17 @@ def _place_tables(page: dict[str, Any], image: Image.Image) -> None:
     placed = 0
     for region in page.get("regions") or []:
         lines = [line for line in region.get("lines") or [] if line.get("bbox")]
+        # PaddleX 라벨은 `region["label"]` 이 아니라 `layout_observation` 안에 있다.
+        # 키를 잘못 읽는 바람에 "PaddleX 가 table 이라 부른 영역" 경로가 한 번도
+        # 발동하지 않았다 — 실측(2026-09-20, 9개 파일): 후보 5개 중 1개만 복원됐고
+        # 나머지 4개는 전부 `우대 조건 | 우대 금리` 형태의 진짜 2열 표였다.
+        layout_label = str(
+            (region.get("layout_observation") or {}).get("label")
+            or region.get("label") or ""
+        ).casefold()
         is_candidate = (
             region.get("kind") == "table"
-            or str(region.get("label") or "").casefold() == "table"
+            or layout_label == "table"
             or tables.looks_like_grid(lines)
         )
         if not is_candidate or len(lines) < tables.MIN_LINES:

@@ -11,23 +11,53 @@ adapters = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(adapters)
 
 
-def test_block_content_is_canonical_and_ocr_is_only_evidence():
+def test_block_content_is_canonical_when_it_covers_every_ocr_line():
+    """PaddleX 본문이 OCR 줄을 모두 담고 있으면 그쪽을 쓴다.
+
+    같은 OCR 결과를 더 잘 조립한 쪽이므로 줄바꿈·띄어쓰기가 자연스럽다.
+    """
     page = adapters.build_page_evidence(
         [{"bbox": [0, 0, 200, 100], "label": "text", "order": 1,
-          "content": "PaddleX가 정리한 본문"}],
-        [{"bbox": [10, 10, 180, 30], "text": "OCR이 다르게 읽은 본문", "score": 0.9}],
+          "content": "첫 줄 둘째 줄"}],
+        [
+            {"bbox": [10, 10, 180, 30], "text": "첫 줄", "score": 0.9},
+            {"bbox": [10, 40, 180, 60], "text": "둘째 줄", "score": 0.9},
+        ],
         page_no=1,
         canvas=[200, 100],
     )
     region = page["regions"][0]
-    assert region["text"] == "PaddleX가 정리한 본문"
+    assert region["text"] == "첫 줄 둘째 줄"
     assert region["text_source"] == "paddlex_block_content"
+    assert region["content_gap_candidates"] == []
+    assert region["ocr_evidence"][0]["text"] == "첫 줄"
+
+
+def test_incomplete_block_content_loses_to_the_ocr_lines():
+    """PaddleX 본문이 OCR 줄을 빠뜨리면 줄 조립본을 쓴다.
+
+    예전에는 디지털 텍스트가 없으면 무조건 `block_content` 가 이겨서, PNG 입력의
+    깨진 본문이 멀쩡한 OCR 줄을 밀어냈다 — 실측(2026-09-20,
+    `3. 예금성상품(거치식).png` p1_r018): block_content 17자
+    (`ㅣ이: 이 / 이무기이해 / (융은이이위||`) vs OCR 줄 168자.
+    두 후보 모두 같은 OCR 결과에서 나오므로 새 텍스트가 생기지는 않는다.
+    """
+    page = adapters.build_page_evidence(
+        [{"bbox": [0, 0, 200, 100], "label": "text", "order": 1,
+          "content": "이무기이해"}],
+        [
+            {"bbox": [10, 10, 180, 30], "text": "월수로 나눠 매월 지급", "score": 0.9},
+            {"bbox": [10, 40, 180, 60], "text": "만기일시지급식 대비 차감", "score": 0.9},
+        ],
+        page_no=1,
+        canvas=[200, 100],
+    )
+    region = page["regions"][0]
+    assert region["text"] == "월수로 나눠 매월 지급\n만기일시지급식 대비 차감"
+    assert region["text_source"] == "ocr_lines_block_incomplete"
     assert region["text_selection_status"] == "conflict_pending_vlm"
-    assert region["ocr_evidence"][0]["text"] == "OCR이 다르게 읽은 본문"
-    assert region["lines"][0]["text"] == "OCR이 다르게 읽은 본문"
-    assert [line["text"] for line in region["content_gap_candidates"]] == [
-        "OCR이 다르게 읽은 본문"
-    ]
+    # 버린 후보도 남는다. 나중에 Judge 가 대조할 수 있어야 한다.
+    assert region["text_candidates"]["paddlex_block_content"] == "이무기이해"
 
 
 def test_empty_block_content_falls_back_to_owned_ocr_lines():

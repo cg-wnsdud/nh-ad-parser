@@ -205,9 +205,25 @@ def build_page_evidence(
             agreement = SequenceMatcher(None, _normalized(block_text), _normalized(line_text)).ratio()
             region["text_agreement"] = round(agreement, 4)
             # 디지털 텍스트는 OCR보다 문자 정확도가 높아 기존 파이프라인도 정본으로 썼다.
+            #
+            # 디지털 줄이 없을 때 무조건 `block_content` 를 쓰면 안 된다. PNG 입력은
+            # 디지털 줄이 아예 없어 **깨진 본문이 항상 이긴다** — 실측(2026-09-20,
+            # `3. 예금성상품(거치식).png` p1_r018): block_content 가
+            # `ㅣ이: 이 / 이무기이해 / (융은이이위||` 17자인데 OCR 줄은 168자가 멀쩡했다.
+            # 그래서 출처가 아니라 **커버리지**로 고른다. `block_content` 가 OCR 줄을
+            # 빠뜨리면 줄 조립본을 쓴다. 두 후보 모두 같은 OCR 결과에서 나오므로
+            # 새 텍스트가 생기지 않는다.
+            missing = [
+                line for line in owned_lines
+                if len(_normalized(line.get("text"))) >= 2
+                and _normalized(line.get("text")) not in _normalized(block_text)
+            ]
             if any(line.get("source") == "digital" for line in owned_lines):
                 region["text"] = line_text
                 region["text_source"] = "digital_ocr_lines"
+            elif missing:
+                region["text"] = line_text
+                region["text_source"] = "ocr_lines_block_incomplete"
             else:
                 region["text"] = block_text
                 region["text_source"] = "paddlex_block_content"
