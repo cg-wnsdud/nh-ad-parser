@@ -212,11 +212,24 @@ def _apply_ownership(
     _assign_reading_order(page)
 
 
+# 표 한 칸이 Region 하나로 흩어져 있을 수 있어 줄 수가 아니라 칸 수로 센다.
+MIN_TABLE_CELLS = 3
+
+
 def _promote_vlm_table_areas(page: dict[str, Any]) -> list[dict[str, Any]]:
     """VLM이 표라고 지목했는데 기하학이 놓친 자리를 표 Region으로 승격한다.
 
-    VLM은 **어디를 볼지**만 알려준다. 승격된 Region의 좌표와 문구는 그 안에서
-    찾은 복구 Region의 OCR 줄에서 나온다. 모델 좌표는 쓰지 않는다.
+    VLM은 **어디를 볼지와 합쳐도 되는지**만 알려준다. 승격된 Region의 좌표와
+    문구는 그 안에 있던 Region들의 OCR 줄에서 나온다. 모델 좌표는 쓰지 않는다.
+
+    합치지 않는 경우가 둘이다.
+
+    - `kind == "field_list"`: 시각적으로는 격자지만 각 행이 서로 다른 항목이다.
+      `대출대상 | …`, `대출한도 | …` 를 한 Region 으로 만들면 라벨이 하나만
+      남아 나머지 항목이 묻힌다. 실측(2026-09-20): VLM 이 `2. 대출성상품` 의
+      항목명–값 블록을 confidence 1.0 으로 표라고 지목했다.
+    - 안에 든 Region 들의 상품 소속이 갈릴 때. 상품을 가로질러 합치면 심의
+      단위가 섞인다.
     """
     areas = page.get("table_areas") or []
     if not areas:
@@ -225,27 +238,46 @@ def _promote_vlm_table_areas(page: dict[str, Any]) -> list[dict[str, Any]]:
     used = sum(1 for region in page["regions"] if region.get("kind") == "table")
     promoted = []
     for area in areas:
+        if str(area.get("kind") or "table") != "table":
+            continue
         box = tables.area_to_bbox(area, page["canvas"])
         if not box:
             continue
-        inside = [
+        # 복구 Region 만 보면 안 된다 — 표 한 칸이 PaddleX Region 으로 잡혀 있을
+        # 수 있다. 실측: `2. 카드상품` 의 5칸 중 2칸이 PaddleX Region 이라 복구
+        # 3칸만으로는 줄 수 하한에 걸려 통째로 버려졌다.
+        pool = [
             region for region in page["regions"]
-            if region.get("origin") == "recovery"
-            and region.get("kind") != "table"
+            if region.get("kind") != "table"
             and region.get("bbox")
-            and tables.inside_ratio(region["bbox"], box) >= 0.6
+            and (region.get("lines") or [])
         ]
-        lines = [line for region in inside for line in region.get("lines") or []]
-        if len(inside) < 2 or len(lines) < tables.MIN_LINES:
+        seeds = [
+            region for region in pool
+            if tables.inside_ratio(region["bbox"], box) >= 0.6
+        ]
+        if len(seeds) < MIN_TABLE_CELLS:
+            continue
+        inside = tables.grow_cells(seeds, pool)
+        owners = {str(region.get("product_id") or "unknown") for region in inside}
+        if len(owners - {"unknown"}) > 1:
             continue
         used += 1
         merged = tables.merge_regions(inside, region_id=f"p{page_no}_t{used:03d}")
-        merged["promoted_by"] = {"source": "vlm_table_area", "note": area.get("note")}
-        keep = {str(region["region_id"]) for region in inside}
+        merged["promoted_by"] = {
+            "source": "vlm_table_area", "note": area.get("note"),
+            "confidence": area.get("confidence"),
+        }
+        gone = {str(region["region_id"]) for region in inside}
         page["regions"] = [
-            region for region in page["regions"] if str(region["region_id"]) not in keep
+            region for region in page["regions"] if str(region["region_id"]) not in gone
         ]
         page["regions"].append(merged)
+        # 사라진 Region 을 가리키던 연결을 새 표 Region 으로 옮긴다. 그대로 두면
+        # 읽기 순서 배치가 대상을 잃는다.
+        for region in page["regions"]:
+            if str(region.get("related_region_id") or "") in gone:
+                region["related_region_id"] = merged["region_id"]
         promoted.append(merged)
     if promoted:
         _assign_reading_order(page)

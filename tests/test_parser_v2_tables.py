@@ -209,3 +209,110 @@ def test_vlm_table_area_is_ignored_when_too_few_lines_sit_inside():
 
     assert full_pipeline._promote_vlm_table_areas(page) == []
     assert len(page["regions"]) == 2
+
+
+def _card_table_regions():
+    """`2. 카드상품` 의 2행 3열 표. 5칸이 Region 5개로 흩어져 있다.
+
+    복구 3칸(`구분`·`적립율`·`2%`)과 PaddleX 2칸이 섞여 있어, 복구 Region 만
+    보면 칸 수가 모자라 통째로 버려졌다.
+    """
+    cells = [
+        ("p1_x001", "recovery", [477, 2315, 560, 2369], "구분"),
+        ("p1_r011", "paddlex", [1175, 2315, 1521, 2372], "GS리테일 점내 가맹점"),
+        ("p1_x003", "recovery", [467, 2410, 573, 2458], "적립율"),
+        ("p1_x002", "recovery", [954, 2393, 1082, 2478], "2%"),
+        ("p1_r012", "paddlex", [1471, 2384, 1901, 2485], "GS25, GS THE FRESH"),
+    ]
+    return [
+        {"region_id": rid, "origin": origin, "kind": "text", "product_id": "product_1",
+         "bbox": box, "text": text,
+         "lines": [{"line_ref": f"p1/{rid}/L000", "bbox": box, "text": text}]}
+        for rid, origin, box, text in cells
+    ]
+
+
+def test_vlm_table_area_merges_paddlex_cells_too():
+    page = {
+        "page_no": 1, "canvas": [4032, 4032],
+        "table_areas": [{"approx_bbox_pct": [10, 55, 40, 65], "kind": "table",
+                         "note": "GS리테일 적립율 표", "confidence": 1.0}],
+        "regions": _card_table_regions(),
+    }
+
+    promoted = full_pipeline._promote_vlm_table_areas(page)
+
+    assert len(promoted) == 1
+    merged = promoted[0]
+    assert merged["region_id"] == "p1_t001"
+    assert merged["kind"] == "table"
+    assert merged["bbox"] == [467, 2315, 1901, 2485]
+    assert merged["bbox_source"] == "ocr_pdf_lines"
+    assert len(merged["lines"]) == 5
+    assert sorted(merged["merged_from"]) == [
+        "p1_r011", "p1_r012", "p1_x001", "p1_x002", "p1_x003",
+    ]
+    assert len(page["regions"]) == 1
+
+
+def test_field_list_areas_are_never_merged():
+    """항목명–값 나열은 행마다 구분값이 달라 합치면 라벨이 하나만 남는다."""
+    page = {
+        "page_no": 1, "canvas": [4032, 4032],
+        "table_areas": [{"approx_bbox_pct": [10, 55, 40, 65], "kind": "field_list",
+                         "note": "대출대상~필요서류", "confidence": 1.0}],
+        "regions": _card_table_regions(),
+    }
+
+    assert full_pipeline._promote_vlm_table_areas(page) == []
+    assert len(page["regions"]) == 5
+
+
+def test_areas_spanning_two_products_are_not_merged():
+    regions = _card_table_regions()
+    regions[1]["product_id"] = "product_2"
+    page = {
+        "page_no": 1, "canvas": [4032, 4032],
+        "table_areas": [{"approx_bbox_pct": [10, 55, 40, 65], "kind": "table",
+                         "note": "", "confidence": 1.0}],
+        "regions": regions,
+    }
+
+    assert full_pipeline._promote_vlm_table_areas(page) == []
+
+
+def test_pixel_valued_areas_are_accepted():
+    """백분율을 요구했지만 모델이 픽셀을 주기도 한다 — 실측 11건 중 4건."""
+    canvas = [1654, 2339]
+    pct = tables.area_to_bbox(
+        {"approx_bbox_pct": [30, 60, 95, 80]}, canvas)
+    pixels = tables.area_to_bbox(
+        {"approx_bbox_pct": [550, 1400, 1000, 1800]}, canvas)
+
+    assert pct == [496, 1403, 1571, 1871]
+    assert pixels == [550, 1400, 1000, 1800]
+    # 0~100 으로 잘라내면 높이가 0이 돼 통째로 버려졌다.
+    assert pixels is not None
+
+
+def test_growing_does_not_reach_across_to_another_column_block():
+    """멀리 떨어진 다른 단은 세로로 겹쳐도 끌어오지 않는다."""
+    regions = _card_table_regions()
+    far = {
+        "region_id": "p1_r024", "origin": "paddlex", "kind": "text",
+        "product_id": "product_1", "bbox": [2411, 2376, 3660, 2565],
+        "text": "생활영역 추가적립",
+        "lines": [{"line_ref": "p1/p1_r024/L000",
+                   "bbox": [2411, 2376, 3660, 2565], "text": "생활영역 추가적립"}],
+    }
+    page = {
+        "page_no": 1, "canvas": [4032, 4032],
+        "table_areas": [{"approx_bbox_pct": [10, 55, 40, 65], "kind": "table",
+                         "note": "", "confidence": 1.0}],
+        "regions": [*regions, far],
+    }
+
+    promoted = full_pipeline._promote_vlm_table_areas(page)
+
+    assert "p1_r024" not in promoted[0]["merged_from"]
+    assert any(r["region_id"] == "p1_r024" for r in page["regions"])

@@ -24,6 +24,8 @@ PRODUCT_IDS = ["page_common", "product_1", "product_2", "product_3", "product_4"
 ACTIONS = ["new_region", "attach_context", "page_common", "decorative", "needs_review"]
 PRODUCT_GROUPS = ["예금성", "대출성", "카드", "투자성", "판단불가"]
 NAME_SHOWN = ["노출", "미노출", "판단불가"]
+# 표처럼 보이는 영역의 두 갈래. `table` 만 하나로 합친다.
+TABLE_KINDS = ["table", "field_list"]
 ABSTAIN = "해당없음"
 
 # 한 라벨링 요청이 감당할 Region 수. 넘으면 나눠 부른다. 목록이 길어지면 뒤쪽
@@ -157,10 +159,13 @@ def _ownership_schema(region_ids: list[str], candidate_ids: list[str]) -> dict[s
                             "minItems": 4,
                             "maxItems": 4,
                         },
+                        # 시각적으로는 둘 다 격자라 기하학으로 구분할 수 없다.
+                        # 합칠지 말지는 의미 판정이므로 여기서 받는다.
+                        "kind": {"type": "string", "enum": TABLE_KINDS},
                         "note": {"type": "string"},
                         "confidence": {"type": "number"},
                     },
-                    "required": ["approx_bbox_pct", "note", "confidence"],
+                    "required": ["approx_bbox_pct", "kind", "note", "confidence"],
                     "additionalProperties": False,
                 },
             },
@@ -234,9 +239,14 @@ def analyze_page_ownership(
    - page_common: 회사명·심의번호 등 공통 영역
    - decorative: 심의 텍스트로 쓰지 않는 순수 장식
    - needs_review: 확정 불가
-4. table_areas: 행과 열로 읽어야 하는 표처럼 보이는 영역이 있으면 대략 위치를
-   페이지 대비 백분율 [x0, y0, x1, y1]로 알려주세요. 정확한 좌표는 필요 없습니다.
-   PaddleX가 표로 잡지 못한 영역도 보이는 대로 적으세요.
+4. table_areas: 행과 열로 나란히 놓인 영역이 있으면 대략 위치를 **페이지 대비
+   백분율** [x0, y0, x1, y1]로 알려주세요(0~100). 픽셀 값이 아닙니다.
+   PaddleX가 표로 잡지 못한 영역도 보이는 대로 적고, kind를 반드시 구분하세요.
+   - table: 머리글이 있고 칸 전체가 **하나의 항목**을 설명하는 진짜 표.
+     예) `구분 | 적립율` 머리글 아래 값이 들어찬 표
+   - field_list: 왼쪽이 항목명, 오른쪽이 그 값인 **서로 다른 항목의 나열**.
+     예) `대출대상 | …`, `대출한도 | …`, `대출기간 | …` 이 세로로 이어지는 블록
+   둘을 헷갈리면 서로 다른 항목이 한 덩어리로 묶여 항목별 구분이 사라집니다.
 5. missing_visible_text: 이미지에는 분명히 보이지만 REGION/CANDIDATE 목록에 전혀 없는 문구만 적으세요.
 
 중요 규칙:

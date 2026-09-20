@@ -143,21 +143,32 @@ def table_candidates(
 
 
 def area_to_bbox(area: dict[str, Any], canvas: list[int]) -> list[int] | None:
-    """VLM이 준 백분율 근사 위치를 페이지 픽셀 bbox로 바꾼다.
+    """VLM이 준 근사 위치를 페이지 픽셀 bbox로 바꾼다.
 
     이 bbox는 **어디를 볼지 고르는 데만** 쓰고 결과 좌표로 쓰지 않는다. 최종
     좌표는 그 안에서 찾은 OCR 줄에서 나온다.
+
+    백분율을 달라고 했지만 모델이 픽셀을 주기도 한다 — 실측(2026-09-20, 11건 중
+    4건): `[30, 250, 95, 850]`, `[550, 1400, 1000, 1800]`. 100을 넘는 값이 있으면
+    픽셀로 보고 그대로 쓴다. 0~100으로 잘라내면 높이가 0이 돼 통째로 버려진다.
     """
     values = [float(value) for value in (area.get("approx_bbox_pct") or [])]
     if len(values) != 4:
         return None
     width, height = int(canvas[0]), int(canvas[1])
     x0, y0, x1, y1 = values
+    if max(values) > 100.0:
+        box = [int(min(x0, x1)), int(min(y0, y1)), int(max(x0, x1)), int(max(y0, y1))]
+    else:
+        box = [
+            int(max(0.0, min(x0, x1)) / 100 * width),
+            int(max(0.0, min(y0, y1)) / 100 * height),
+            int(min(100.0, max(x0, x1)) / 100 * width),
+            int(min(100.0, max(y0, y1)) / 100 * height),
+        ]
     box = [
-        int(max(0.0, min(x0, x1)) / 100 * width),
-        int(max(0.0, min(y0, y1)) / 100 * height),
-        int(min(100.0, max(x0, x1)) / 100 * width),
-        int(min(100.0, max(y0, y1)) / 100 * height),
+        max(0, min(box[0], width)), max(0, min(box[1], height)),
+        max(0, min(box[2], width)), max(0, min(box[3], height)),
     ]
     if box[2] - box[0] < 8 or box[3] - box[1] < 8:
         return None
@@ -170,6 +181,45 @@ def inside_ratio(box: list[int], area: list[int]) -> float:
     iy = max(0, min(box[3], area[3]) - max(box[1], area[1]))
     size = max(1, (box[2] - box[0]) * (box[3] - box[1]))
     return ix * iy / size
+
+
+def grow_cells(
+    seeds: list[dict[str, Any]], pool: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """씨앗 칸에서 시작해 같은 행에 붙어 있는 칸을 끌어온다.
+
+    VLM 의 근사 위치는 표 가장자리를 덜 덮는 일이 잦다 — 실측(2026-09-20,
+    `2. 카드상품`): 5칸 중 오른쪽 1칸이 지목 범위 밖 33% 만 겹쳐 빠졌다. 범위
+    자체를 넓히는 대신, **씨앗과 세로로 겹치고 가로로 붙어 있는 칸**만 더한다.
+    떨어져 있는 다른 단은 가로 간격에서 걸러진다.
+    """
+    if not seeds:
+        return []
+    chosen = {id(region): region for region in seeds}
+    heights = [
+        max(6, region["bbox"][3] - region["bbox"][1])
+        for region in seeds if region.get("bbox")
+    ]
+    reach = float(median(heights)) * 2.0 if heights else 0.0
+    for _ in range(4):  # 한 번에 한 칸씩 번져도 네 번이면 멈춘다
+        box = _union([list(region["bbox"]) for region in chosen.values()])
+        added = False
+        for region in pool:
+            if id(region) in chosen or not region.get("bbox"):
+                continue
+            rb = region["bbox"]
+            height = max(1, rb[3] - rb[1])
+            overlap = max(0, min(rb[3], box[3]) - max(rb[1], box[1]))
+            if overlap / height < 0.5:
+                continue  # 같은 행이 아니다
+            gap = max(0, max(rb[0] - box[2], box[0] - rb[2]))
+            if gap > reach:
+                continue  # 붙어 있지 않다 — 다른 단이다
+            chosen[id(region)] = region
+            added = True
+        if not added:
+            break
+    return list(chosen.values())
 
 
 def _cell_schema(line_refs: list[str]) -> dict[str, Any]:
@@ -338,9 +388,17 @@ def merge_regions(
 
     줄은 그대로 옮기므로 소유권이 늘거나 줄지 않는다.
     """
+    regions = sorted(regions, key=lambda r: ((r.get("bbox") or [0, 0])[1], (r.get("bbox") or [0, 0])[0]))
     lines = [line for region in regions for line in region.get("lines") or []]
     lines.sort(key=lambda line: (_bbox(line)[1], _bbox(line)[0]))
     merged = copy.deepcopy(regions[0])
+    # 맨 앞 Region 이 `unknown` 이라고 나머지의 소속까지 버리면 안 된다.
+    owned = [
+        str(region.get("product_id")) for region in regions
+        if region.get("product_id") and str(region.get("product_id")) != "unknown"
+    ]
+    if owned:
+        merged["product_id"] = owned[0]
     merged.update({
         "region_id": region_id,
         "kind": "table",
