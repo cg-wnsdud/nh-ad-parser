@@ -83,8 +83,10 @@ def test_each_product_resolves_its_own_template_from_its_own_regions():
     assert resolved["product_2"]["template_id"] == "예금성상품-상품명 미노출"
     # 상품별 허용 라벨이 실제로 갈려야 의미가 있다.
     assert resolved["product_1"]["labels"] != resolved["product_2"]["labels"]
+    # 상품이 둘이면 공통 영역에 어느 템플릿을 적용할지 모호하므로 교집합만 허용한다.
     assert resolved["page_common"]["labels"] == templates.common_gubun(catalog)
     assert resolved["page_common"]["template_id"] is None
+    assert resolved["page_common"]["source"] == "catalog_intersection"
 
 
 def test_single_product_keeps_the_document_classifier_judgment():
@@ -233,3 +235,32 @@ def test_label_pages_marks_regions_for_review_when_template_is_unresolved():
     assert page["regions"][0]["semantic_label"] is None
     assert page["regions"][0]["needs_review"] is True
     assert "미확정" in page["regions"][0]["label_decision"]["reason"]
+
+
+def test_single_product_does_not_narrow_the_page_common_labels():
+    """상품이 하나면 공통 영역의 라벨을 좁히지 않는다.
+
+    좁힐 이유는 "어느 상품의 템플릿인지 모호해서"인데 상품이 하나면 모호하지
+    않다. 소유권 판정의 공통/상품 경계는 실행마다 흔들리므로(실측: page_common
+    수가 9→10, 6→7로 움직임) 좁히면 실제로는 상품 구분값인 글이 정답 라벨에
+    닿지 못한다.
+    """
+    catalog = load_catalog()
+    doc = _doc(
+        [{"product_id": "product_1", "name": "어디든대출",
+          "product_group": "대출성", "product_name_shown": "노출"}],
+        [
+            {"region_id": "r1", "product_id": "product_1", "lines": [{"text": "대출한도"}]},
+            {"region_id": "r2", "product_id": "page_common",
+             "lines": [{"text": "준법감시인 심의필 2026-2731"}]},
+        ],
+        source_file="14. 대출성상품.pdf", group="대출성", shown="노출",
+    )
+
+    resolved = templates.resolve_product_templates(doc, catalog)
+
+    common = resolved["page_common"]
+    assert common["source"] == "single_product_template"
+    assert common["labels"] == resolved["product_1"]["labels"]
+    assert set(templates.common_gubun(catalog)) <= set(common["labels"])
+    assert len(common["labels"]) > len(templates.common_gubun(catalog))

@@ -117,21 +117,10 @@ def resolve_product_templates(
     shown_of = _per_product_value("product_name_shown", meta, doc_shown)
     output: dict[str, dict[str, Any]] = {}
 
-    for product_id, regions in _regions_by_product(doc).items():
+    by_product = _regions_by_product(doc)
+    for product_id, regions in by_product.items():
         if product_id == PAGE_COMMON:
-            output[product_id] = {
-                "template_id": None,
-                "status": "page_common",
-                "source": "catalog_intersection",
-                "confidence": 1.0,
-                "reason": "모든 템플릿에 공통인 구분값만 허용",
-                "candidates": [],
-                "labels": shared,
-                "product_group": None,
-                "product_name_shown": None,
-                "region_count": len(regions),
-            }
-            continue
+            continue  # 상품이 몇 개인지 알아야 정할 수 있어 마지막으로 미룬다.
 
         product = meta.get(product_id) or {}
         group = group_of.get(product_id) or doc_group
@@ -158,7 +147,61 @@ def resolve_product_templates(
         resolution["region_count"] = len(regions)
         output[product_id] = resolution
 
+    if PAGE_COMMON in by_product:
+        output[PAGE_COMMON] = _page_common_resolution(
+            output, shared, region_count=len(by_product[PAGE_COMMON]),
+        )
     return output
+
+
+def _page_common_resolution(
+    resolved: dict[str, dict[str, Any]], shared: list[str], *, region_count: int,
+) -> dict[str, Any]:
+    """페이지 공통 영역의 허용 라벨을 정한다.
+
+    상품이 둘 이상이면 어느 상품의 템플릿을 적용할지 모호하므로 19개 템플릿의
+    교집합(회사명·유의사항·심의번호)만 허용한다.
+
+    상품이 하나면 모호하지 않으므로 좁히지 않는다. 소유권 판정의 공통/상품 경계는
+    실행마다 흔들린다(실측 2026-09-19: `4. 카드상품`에서 공통 영역 10건이 unknown으로
+    샜고, 프롬프트 수정 뒤 page_common 수가 9→10, 6→7로 움직였다). 흔들리는 신호로
+    enum을 좁히면 실제로는 `대출한도`인 글이 공통으로 분류됐을 때 정답 라벨이
+    목록에 없어 영원히 미배정으로 남는다.
+    """
+    products = {
+        product_id: item for product_id, item in resolved.items()
+        if product_id not in (PAGE_COMMON, UNKNOWN) and item.get("labels")
+    }
+    if len(products) == 1:
+        only = next(iter(products.values()))
+        labels = list(only["labels"])
+        labels += [gubun for gubun in shared if gubun not in labels]
+        return {
+            "template_id": only.get("template_id"),
+            "status": "page_common",
+            "source": "single_product_template",
+            "confidence": 1.0,
+            "reason": "상품이 하나뿐이라 그 상품의 구분값을 그대로 허용",
+            "candidates": [only.get("template_id")] if only.get("template_id") else [],
+            "labels": labels,
+            "product_group": None,
+            "product_name_shown": None,
+            "region_count": region_count,
+        }
+    return {
+        "template_id": None,
+        "status": "page_common",
+        "source": "catalog_intersection",
+        "confidence": 1.0,
+        "reason": (
+            f"상품 {len(products)}종이라 어느 템플릿인지 모호함. 공통 구분값만 허용"
+        ),
+        "candidates": [],
+        "labels": list(shared),
+        "product_group": None,
+        "product_name_shown": None,
+        "region_count": region_count,
+    }
 
 
 def review_units(
