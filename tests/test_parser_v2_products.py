@@ -154,8 +154,33 @@ def test_unknown_product_can_still_use_the_shared_common_labels():
 
     resolved = templates.resolve_product_templates(doc, catalog)
 
-    assert set(templates.common_gubun(catalog)) <= set(resolved["unknown"]["labels"])
-    assert resolved["unknown"]["template_id"] == resolved["product_1"]["template_id"]
+    unknown = resolved["unknown"]
+    assert unknown["source"] == "union_of_document_templates"
+    assert set(templates.common_gubun(catalog)) <= set(unknown["labels"])
+    # 문서에 등장한 상품 구분값도 모두 허용한다. 소속을 모른다는 것은 어느 상품
+    # 것일 수도 있다는 뜻이라 후보를 좁힐 근거가 없다.
+    assert set(resolved["product_1"]["labels"]) <= set(unknown["labels"])
+
+
+def test_unknown_is_not_a_review_unit():
+    """소유 상품을 모르는 영역이 실재하는 상품처럼 심의를 받으면 안 된다."""
+    pages = [{
+        "regions": [
+            {"region_id": "r1", "product_id": "product_1"},
+            {"region_id": "r2", "product_id": "unknown"},
+            {"region_id": "r3", "product_id": "page_common"},
+        ],
+    }]
+    product_templates = {
+        "product_1": {"template_id": "대출성상품-상품명 노출", "labels": ["회사명"],
+                      "status": "confirmed", "product_name": "대출"},
+        "unknown": {"template_id": None, "labels": ["회사명"], "status": "unowned"},
+        "page_common": {"template_id": None, "labels": ["회사명"], "status": "page_common"},
+    }
+
+    units = templates.review_units(pages, product_templates)
+
+    assert [unit["product_id"] for unit in units] == ["product_1"]
 
 
 def test_review_units_pair_each_product_with_the_shared_common_regions():

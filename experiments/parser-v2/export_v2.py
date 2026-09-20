@@ -188,6 +188,14 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
         # 돌리고, 각 단위의 허용 라벨은 그 상품의 템플릿에서 온다.
         "product_templates": copy.deepcopy(evidence.get("product_templates") or {}),
         "review_units": copy.deepcopy(evidence.get("review_units") or []),
+        # 소유 상품을 확정하지 못한 Region. 심의 단위에 넣으면 실재하지 않는
+        # 상품이 하나 더 있는 것처럼 보이므로 따로 싣고 검수 대상으로 남긴다.
+        "unowned_region_ids": [
+            region["region_id"]
+            for page in pages_out
+            for region in page["regions"]
+            if str(region.get("product_id")) == "unknown"
+        ],
         "pages": pages_out,
         "label_index": [
             {"label": label, "references": references}

@@ -119,8 +119,10 @@ def resolve_product_templates(
 
     by_product = _regions_by_product(doc)
     for product_id, regions in by_product.items():
-        if product_id == PAGE_COMMON:
-            continue  # 상품이 몇 개인지 알아야 정할 수 있어 마지막으로 미룬다.
+        # 둘 다 특정 상품에 속하지 않아 어느 상품 텍스트로 템플릿을 고를 수 없다.
+        # 상품 판정이 끝난 뒤에 정한다.
+        if product_id in (PAGE_COMMON, UNKNOWN):
+            continue
 
         product = meta.get(product_id) or {}
         group = group_of.get(product_id) or doc_group
@@ -134,13 +136,7 @@ def resolve_product_templates(
             "pages": [{"regions": regions, "unassigned_lines": []}],
         }
         resolution = dict(resolve_template(product_doc, catalog))
-        labels = template_labels(catalog, resolution.get("template_id"))
-        if product_id == UNKNOWN and labels:
-            # 소유권을 확정하지 못한 Region이라 어느 상품 템플릿으로 좁힐 근거가
-            # 없다. 공통 구분값(회사명·유의사항·심의번호)까지 허용해, 소유권
-            # 판정이 unknown으로 흘린 공통 영역이 라벨을 잃지 않게 한다.
-            labels = labels + [gubun for gubun in shared if gubun not in labels]
-        resolution["labels"] = labels
+        resolution["labels"] = template_labels(catalog, resolution.get("template_id"))
         resolution["product_group"] = group
         resolution["product_name_shown"] = shown
         resolution["product_name"] = product.get("name")
@@ -151,7 +147,44 @@ def resolve_product_templates(
         output[PAGE_COMMON] = _page_common_resolution(
             output, shared, region_count=len(by_product[PAGE_COMMON]),
         )
+    if UNKNOWN in by_product:
+        output[UNKNOWN] = _unknown_resolution(
+            output, shared, region_count=len(by_product[UNKNOWN]),
+        )
     return output
+
+
+def _unknown_resolution(
+    resolved: dict[str, dict[str, Any]], shared: list[str], *, region_count: int,
+) -> dict[str, Any]:
+    """소유권을 확정하지 못한 Region의 허용 라벨.
+
+    이 Region 하나만 모아 `resolve_template`을 부르면 근거가 한두 줄뿐이라
+    거의 항상 실패하고(실측 2026-09-20: 3건 모두 `판단불가`), 라벨이 통째로
+    비면서 문서당 템플릿 판정 호출만 한 번 더 나간다.
+
+    소속을 모른다는 것은 어느 상품 것일 수도 있다는 뜻이다. 후보를 좁힐 근거가
+    없으므로 이 문서에 등장한 모든 템플릿의 구분값과 공통 구분값을 합쳐 준다.
+    잘못된 라벨이 붙을 위험보다, 라벨이 아예 없어 검수 목록만 늘어나는 쪽이 나쁘다.
+    """
+    labels: list[str] = []
+    for product_id, item in resolved.items():
+        if product_id in (PAGE_COMMON, UNKNOWN):
+            continue
+        labels += [gubun for gubun in item.get("labels") or [] if gubun not in labels]
+    labels += [gubun for gubun in shared if gubun not in labels]
+    return {
+        "template_id": None,
+        "status": "unowned",
+        "source": "union_of_document_templates",
+        "confidence": 0.0,
+        "reason": "소유 상품을 확정하지 못해 문서에 등장한 구분값을 모두 허용",
+        "candidates": [],
+        "labels": labels,
+        "product_group": None,
+        "product_name_shown": None,
+        "region_count": region_count,
+    }
 
 
 def _page_common_resolution(
@@ -221,7 +254,10 @@ def review_units(
     ]
     units = []
     for product_id, resolution in product_templates.items():
-        if product_id == PAGE_COMMON:
+        # `unknown`은 상품이 아니다. 심의 단위로 만들면 소속을 모르는 영역이
+        # 실재하는 상품인 것처럼 별도 심의를 받게 된다. P3에는 `unowned_region_ids`로
+        # 따로 실어 검수 대상임을 드러낸다.
+        if product_id in (PAGE_COMMON, UNKNOWN):
             continue
         region_ids = [
             str(region["region_id"])
