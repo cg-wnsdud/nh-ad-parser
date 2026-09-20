@@ -112,9 +112,13 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
                 },
                 "selected_text": text,
                 "selected_source": region.get("text_source"),
+                # 한 영역에 구분값이 여럿인 것은 **정상**이다. 그러라고 라벨을
+                # 여러 개 붙인다. 예전에는 쪼개야 한다는 신호(`needs_split`)여서
+                # 검수로 올렸는데, 지금 그러면 라벨을 잘 붙인 영역이 전부 검수
+                # 목록에 들어간다. 검수는 실제 문제일 때만 켠다.
                 "selection_status": (
                     "parser_v2_requires_review"
-                    if region.get("needs_review") or region.get("needs_split")
+                    if region.get("needs_review")
                     else "parser_v2_selected"
                 ),
                 # 소유권 판정은 행별 사유를 더 이상 받지 않는다(응답 길이 때문).
@@ -133,8 +137,7 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
                 "line_refs": refs,
                 "bbox_source": region.get("bbox_source") or "paddlex_layout",
                 "bbox_quality": region.get("bbox_quality") or "exact",
-                "needs_review": bool(region.get("needs_review") or region.get("needs_split")),
-                "needs_split": bool(region.get("needs_split")),
+                "needs_review": bool(region.get("needs_review")),
                 "related_region_id": region.get("related_region_id"),
                 "origin": region.get("origin") or "paddlex",
                 # 표는 행·열 구조를 살려 보낸다. 셀의 좌표와 문구는 OCR 줄에서

@@ -116,14 +116,14 @@ def _ownership_schema(region_ids: list[str], candidate_ids: list[str]) -> dict[s
                     "properties": {
                         "region_id": {"type": "string", "enum": region_enum},
                         "product_id": {"type": "string", "enum": PRODUCT_IDS},
-                        "needs_split": {"type": "boolean"},
+                        "mixed_gubun": {"type": "boolean"},
                         "confidence": {"type": "number"},
                         # Region마다 자유 서술 reason을 받으면 응답의 대부분이
                         # 거기에 들어간다. 실측: Region 30개 페이지에서 응답이
                         # 14,827자까지 늘어 잘렸고, 예산을 키우자 120초 타임아웃이
                         # 났다. 근거는 analysis 한 곳에 모으고 행마다 두지 않는다.
                     },
-                    "required": ["region_id", "product_id", "needs_split", "confidence"],
+                    "required": ["region_id", "product_id", "mixed_gubun", "confidence"],
                     "additionalProperties": False,
                 },
             },
@@ -239,7 +239,7 @@ def analyze_page_ownership(
    회사명·로고·심의번호·연락처·공통 안내문구, 그리고 특정 상품 하나가 아니라
    광고 전체에 걸리는 유의사항은 **반드시 page_common**입니다.
    unknown은 상품 소속도 공통도 아니라고 판단될 때만 쓰는 마지막 선택지입니다.
-   서로 다른 의미가 실제로 섞였을 때만 needs_split=true로 하세요.
+   서로 다른 의미가 실제로 섞였을 때만 mixed_gubun=true로 하세요.
 3. recovery_decisions: 아래 CANDIDATE ID를 정확히 한 번씩 반환하세요.
    - new_region: 독립 의미 영역
    - attach_context: target_region_id의 설명·유의사항이지만 bbox는 별도 보존
@@ -430,7 +430,7 @@ def validate_ownership(
         region_map.setdefault(region_id, {
             "region_id": region_id,
             "product_id": "unknown",
-            "needs_split": False,
+            "mixed_gubun": False,
             "confidence": 0.0,
             "reason": "VLM 응답에서 누락되어 검수 필요",
         })
@@ -482,11 +482,11 @@ def _label_schema(region_ids: list[str], labels: list[str]) -> dict[str, Any]:
                     "properties": {
                         "region_id": {"type": "string", "enum": region_ids or ["__none__"]},
                         "label": {"type": "string", "enum": [*labels, ABSTAIN]},
-                        "needs_split": {"type": "boolean"},
+                        "mixed_gubun": {"type": "boolean"},
                         "confidence": {"type": "number"},
                         "reason": {"type": "string"},
                     },
-                    "required": ["region_id", "label", "needs_split", "confidence", "reason"],
+                    "required": ["region_id", "label", "mixed_gubun", "confidence", "reason"],
                     "additionalProperties": False,
                 },
             },
@@ -538,7 +538,7 @@ def analyze_product_labels(
 - 판정은 반드시 region_labels 배열에 넣으세요. analysis에 문장으로 적으면 무효입니다.
 - analysis에는 전체 요약 한 문장만, 각 reason은 40자 이내로 쓰세요.
 - 허용 라벨 중 맞는 것이 없으면 {ABSTAIN}을 고르세요. 억지로 고르지 마세요.
-- 한 Region에 서로 다른 구분값이 실제로 섞여 있으면 needs_split=true로 표시하고
+- 한 Region에 서로 다른 구분값이 실제로 섞여 있으면 mixed_gubun=true로 표시하고
   둘 중 하나를 임의로 고르지 마세요.
 - 이 목록은 이미 이 상품 소속으로 확정된 영역입니다. 상품 소유권을 다시 판정하지 마세요.
 - 파란 박스가 이미지 위의 해당 영역입니다. 위치와 주변 문맥을 함께 보세요.
@@ -603,7 +603,7 @@ def validate_labels(
         output[region_id] = {
             "region_id": region_id,
             "label": label if label in allowed else None,
-            "needs_split": bool(item.get("needs_split")),
+            "mixed_gubun": bool(item.get("mixed_gubun")),
             "confidence": float(item.get("confidence") or 0.0),
             "reason": str(item.get("reason") or ""),
         }
@@ -611,7 +611,7 @@ def validate_labels(
         output.setdefault(region_id, {
             "region_id": region_id,
             "label": None,
-            "needs_split": False,
+            "mixed_gubun": False,
             "confidence": 0.0,
             "reason": "VLM 응답에서 누락되어 검수 필요",
         })

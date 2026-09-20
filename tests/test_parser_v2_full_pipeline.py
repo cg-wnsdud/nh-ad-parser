@@ -84,7 +84,7 @@ def test_p3_preserves_region_and_unassigned_bboxes_for_highlighting():
                 "bbox_quality": "exact",
                 "origin": "recovery",
                 "needs_review": False,
-                "needs_split": False,
+                "mixed_gubun": False,
                 "lines": [{"line_ref": "p1/unassigned/L001", "text": "대출대상 직장인"}],
             }],
             "unassigned_lines": [{

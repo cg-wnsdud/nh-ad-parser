@@ -38,7 +38,7 @@ def _mixed_region():
         "origin": "paddlex",
         "text": "가입대상 개인\n가입금액 100만원 이상\n(원 단위)",
         "semantic_label": "가입대상",
-        "needs_split": True,
+        "mixed_gubun": True,
         "lines": [
             {"line_ref": "p1/p1_r001/L000", "bbox": [263, 1365, 501, 1399],
              "text": "가입대상 개인"},
@@ -47,6 +47,15 @@ def _mixed_region():
             {"line_ref": "p1/p1_r001/L002", "bbox": [429, 1491, 563, 1529],
              "text": "(원 단위)"},
         ],
+    }
+
+
+def _document(region):
+    return {
+        "doc_id": "d", "source_file": "s.pdf", "file_type": "pdf",
+        "classification": {}, "template": {},
+        "pages": [{"page_no": 1, "canvas": [1654, 2339],
+                   "regions": [region], "unassigned_lines": []}],
     }
 
 
@@ -113,14 +122,7 @@ def test_p3_exposes_every_label_and_keeps_the_region_addressable():
     region["label_spans"] = full_pipeline._label_spans_from_lines(
         region, _labels("가입대상", "가입금액", "가입금액"))
     region["semantic_label"] = "가입금액"
-    document = {
-        "doc_id": "d", "source_file": "s.pdf", "file_type": "pdf",
-        "classification": {}, "template": {},
-        "pages": [{"page_no": 1, "canvas": [1654, 2339],
-                   "regions": [region], "unassigned_lines": []}],
-    }
-
-    p3 = export_v2.build_p3(export_v2.build_p1(document))
+    p3 = export_v2.build_p3(export_v2.build_p1(_document(region)))
 
     out = p3["pages"][0]["regions"][0]
     assert out["region_id"] == "p1_r001"
@@ -140,14 +142,7 @@ def test_label_index_lists_every_span_not_just_the_representative():
     region["label_spans"] = full_pipeline._label_spans_from_lines(
         region, _labels("가입대상", "가입금액", "가입금액"))
     region["semantic_label"] = "가입금액"
-    document = {
-        "doc_id": "d", "source_file": "s.pdf", "file_type": "pdf",
-        "classification": {}, "template": {},
-        "pages": [{"page_no": 1, "canvas": [1654, 2339],
-                   "regions": [region], "unassigned_lines": []}],
-    }
-
-    p3 = export_v2.build_p3(export_v2.build_p1(document))
+    p3 = export_v2.build_p3(export_v2.build_p1(_document(region)))
 
     found = {row["label"]: row["references"][0] for row in p3["label_index"]}
     assert set(found) == {"가입대상", "가입금액"}
@@ -158,19 +153,46 @@ def test_label_index_lists_every_span_not_just_the_representative():
 def test_region_without_line_labels_still_reports_one_entry():
     """줄 단위 라벨링을 거치지 않은 영역도 같은 모양으로 나온다."""
     region = _mixed_region()
-    region.pop("needs_split")
+    region.pop("mixed_gubun")
     region["semantic_label"] = "가입대상"
-    document = {
-        "doc_id": "d", "source_file": "s.pdf", "file_type": "pdf",
-        "classification": {}, "template": {},
-        "pages": [{"page_no": 1, "canvas": [1654, 2339],
-                   "regions": [region], "unassigned_lines": []}],
-    }
-
-    p3 = export_v2.build_p3(export_v2.build_p1(document))
+    p3 = export_v2.build_p3(export_v2.build_p1(_document(region)))
 
     entries = p3["pages"][0]["regions"][0]["labels"]
     assert len(entries) == 1
     assert entries[0]["span_id"] == "p1_r001#01"
     assert entries[0]["bbox"] == [254, 1357, 641, 1531]
     assert entries[0]["line_refs"] == [f"p1/p1_r001/L{i:03d}" for i in range(3)]
+
+
+def test_multiple_gubun_alone_is_not_a_review_item():
+    """구분값이 여럿인 것은 정상이다. 그러라고 라벨을 여러 개 붙인다.
+
+    예전에는 `needs_split`(쪼개야 한다는 신호)이 그대로 검수로 이어져, 라벨을
+    잘 붙인 영역이 전부 검수 목록에 들어갔다.
+    """
+    region = _mixed_region()
+    region["label_spans"] = full_pipeline._label_spans_from_lines(
+        region, _labels("가입대상", "가입금액", "가입금액"))
+    region["needs_review"] = False
+
+    p3 = export_v2.build_p3(export_v2.build_p1(_document(region)))
+
+    out = p3["pages"][0]["regions"][0]
+    assert len(out["labels"]) == 2
+    assert out["needs_review"] is False
+    assert out["selection_status"] == "parser_v2_selected"
+    # 쪼개기 시절의 필드는 P3 에 더 이상 없다.
+    assert "needs_split" not in out
+
+
+def test_an_unlabelled_span_does_raise_review():
+    region = _mixed_region()
+    region["label_spans"] = full_pipeline._label_spans_from_lines(
+        region, _labels("가입대상", None, None))
+    region["needs_review"] = True   # _label_region_lines 가 켜는 조건
+
+    p3 = export_v2.build_p3(export_v2.build_p1(_document(region)))
+
+    out = p3["pages"][0]["regions"][0]
+    assert out["needs_review"] is True
+    assert [entry["label"] for entry in out["labels"]] == ["가입대상", None]

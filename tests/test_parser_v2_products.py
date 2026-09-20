@@ -232,9 +232,9 @@ def test_label_validation_drops_labels_outside_the_product_template():
         {
             "analysis": "",
             "region_labels": [
-                {"region_id": "r1", "label": "대출한도", "needs_split": False,
+                {"region_id": "r1", "label": "대출한도", "mixed_gubun": False,
                  "confidence": 0.9, "reason": ""},
-                {"region_id": "r2", "label": "연회비", "needs_split": False,
+                {"region_id": "r2", "label": "연회비", "mixed_gubun": False,
                  "confidence": 0.9, "reason": "다른 템플릿 구분값"},
             ],
         },

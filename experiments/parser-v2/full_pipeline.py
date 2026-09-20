@@ -144,7 +144,7 @@ def _apply_ownership(
         decision = by_region[region["region_id"]]
         region["product_id"] = decision["product_id"]
         region["semantic_label"] = None
-        region["needs_split"] = bool(decision.get("needs_split"))
+        region["mixed_gubun"] = bool(decision.get("mixed_gubun"))
         region["needs_review"] = bool(
             decision.get("confidence", 0.0) < 0.7 or decision.get("product_id") == "unknown"
         )
@@ -184,7 +184,7 @@ def _apply_ownership(
                 "page_common" if decision["action"] == "page_common" else decision["product_id"]
             ),
             "semantic_label": None,
-            "needs_split": False,
+            "mixed_gubun": False,
             "needs_review": bool(
                 decision["action"] in {"needs_review", "decorative"}
                 or decision.get("confidence", 0.0) < 0.7
@@ -359,7 +359,7 @@ def _label_pages(
                     region["label_decision"] = {
                         "region_id": region["region_id"],
                         "label": None,
-                        "needs_split": False,
+                        "mixed_gubun": False,
                         "confidence": 0.0,
                         "reason": f"{product_id} 템플릿 미확정으로 라벨링 보류",
                     }
@@ -379,8 +379,8 @@ def _label_pages(
                 decision = by_region[str(region["region_id"])]
                 region["semantic_label"] = decision["label"]
                 region["label_decision"] = decision
-                if decision["needs_split"]:
-                    region["needs_split"] = True
+                if decision["mixed_gubun"]:
+                    region["mixed_gubun"] = True
                 if decision["label"] is None or decision["confidence"] < 0.7:
                     region["needs_review"] = True
         page["label_analysis"] = "\n".join(value for value in notes if value)
@@ -409,7 +409,7 @@ def _label_region_lines(
     for page in pages:
         image = images.get(int(page["page_no"]))
         for region in page.get("regions") or []:
-            if not region.get("needs_split") or region.get("kind") == "table":
+            if not region.get("mixed_gubun") or region.get("kind") == "table":
                 continue
             if len(region.get("lines") or []) < 2:
                 continue
@@ -434,7 +434,9 @@ def _label_region_lines(
                 region["semantic_label"] = max(
                     named, key=lambda span: len(span["line_refs"]),
                 )["label"]
-            region["needs_split"] = len({span["label"] for span in spans}) > 1
+            # 구분값이 여럿이라는 사실 자체는 문제가 아니다. 검수는 미분류
+            # 구간이 남았을 때만 켠다.
+            region["label_span_count"] = len(spans)
             if len(named) < len(spans):
                 # 어느 구분값에도 안 걸리는 줄이 있다. 광고 수식어구일 수도,
                 # 빠뜨린 항목일 수도 있어 위치를 남기고 검수로 올린다.
@@ -684,7 +686,7 @@ def run_full_pipeline(
         # 3단계 — 상품별 라벨링.
         _label_pages(pages, product_templates, images)
         # 4단계 — 구분값이 섞인 Region 에 줄 단위로 라벨을 더 붙인다. 라벨링
-        # 뒤라야 어디가 섞였는지(needs_split) 알 수 있다. 영역은 건드리지 않는다.
+        # 뒤라야 어디가 섞였는지(mixed_gubun) 알 수 있다. 영역은 건드리지 않는다.
         doc["multi_label_regions"] = _label_region_lines(
             pages, product_templates, images,
         )
