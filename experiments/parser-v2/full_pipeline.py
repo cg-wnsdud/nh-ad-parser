@@ -386,31 +386,33 @@ def _label_pages(
         page["label_analysis"] = "\n".join(value for value in notes if value)
 
 
-def _split_labelled_regions(
+def _label_region_lines(
     pages: list[dict[str, Any]],
     product_templates: dict[str, dict[str, Any]],
     images: dict[int, Any],
 ) -> int:
-    """구분값이 여럿 섞인 Region 을 줄 라벨로 쪼갠다.
+    """구분값이 여럿 섞인 Region 에 라벨을 **여러 개** 붙인다.
 
-    Region 당 라벨 하나라는 계약 때문에, 여러 항목이 한 영역에 들어가면 나머지
-    구분값이 통째로 사라진다 — 실측(2026-09-20, `1. 예금성상품(거치식)` p1_r001):
-    `가입대상개인 / 가입금액100만원 이상 / (원 단위)` 가 `가입대상` 하나만 받았다.
+    Region 을 쪼개지 않는다. 한때 자식 Region 으로 대체해봤지만 손해가 더 컸다.
 
-    부모를 자식들로 **대체**한다. 부모를 남기면 같은 줄을 부모와 자식이 함께
-    소유해 P3 의 "줄 중복 소유 0" 계약이 깨진다. 좌표는 자식이 가진 줄의
-    합집합이라 새로 만들지 않는다.
+    - 자식 bbox 는 결국 자기가 가진 OCR 줄의 합집합이라, 라벨 구간에서 같은
+      좌표를 계산할 수 있다. 쪼개서 얻는 정밀도가 **없다**.
+    - 라벨이 틀리면 쪼개기는 **경계까지 틀린다**. 라벨만 붙이면 라벨만 고치면 된다.
+    - PaddleX 가 잡은 원본 영역과 그 ID 가 사라져 P3 에서 되짚을 수 없었다.
+      실측(2026-09-20): 분할 실행의 `location_index` 에 부모 `p1_r001` 이 없고
+      자식만 남았다.
+
+    실측 대상(`1. 예금성상품(거치식)` p1_r001): `가입대상개인 / 가입금액100만원 이상 /
+    (원 단위)` 가 라벨 `가입대상` 하나만 받아 `가입금액` 구분값이 사라졌다.
     """
-    split_count = 0
+    labelled = 0
     for page in pages:
         image = images.get(int(page["page_no"]))
-        targets = [
-            region for region in page.get("regions") or []
-            if region.get("needs_split")
-            and region.get("kind") != "table"
-            and len(region.get("lines") or []) >= 2
-        ]
-        for region in targets:
+        for region in page.get("regions") or []:
+            if not region.get("needs_split") or region.get("kind") == "table":
+                continue
+            if len(region.get("lines") or []) < 2:
+                continue
             resolution = product_templates.get(
                 str(region.get("product_id") or "unknown")
             ) or {}
@@ -421,28 +423,36 @@ def _split_labelled_regions(
                 image, region,
                 template_id=resolution.get("template_id"), labels=labels,
             )
-            children = _children_from_line_labels(region, result["line_labels"])
-            if len(children) < 2:
-                # 실제로는 한 구분값뿐이었다. 쪼개지 않고 그 라벨만 반영한다.
-                if children:
-                    region["semantic_label"] = children[0]["semantic_label"]
-                    region["needs_split"] = False
+            spans = _label_spans_from_lines(region, result["line_labels"])
+            if not spans:
                 continue
-            index = page["regions"].index(region)
-            page["regions"][index:index + 1] = children
-            split_count += 1
-        if targets:
-            _assign_reading_order(page)
-    return split_count
+            region["label_spans"] = spans
+            named = [span for span in spans if span["label"]]
+            # 대표 라벨은 줄을 가장 많이 가진 구간이 갖는다. Region 하나를
+            # 고를 수밖에 없는 화면·요약에서 쓴다.
+            if named:
+                region["semantic_label"] = max(
+                    named, key=lambda span: len(span["line_refs"]),
+                )["label"]
+            region["needs_split"] = len({span["label"] for span in spans}) > 1
+            if len(named) < len(spans):
+                # 어느 구분값에도 안 걸리는 줄이 있다. 광고 수식어구일 수도,
+                # 빠뜨린 항목일 수도 있어 위치를 남기고 검수로 올린다.
+                region["needs_review"] = True
+            labelled += 1
+    return labelled
 
 
-def _children_from_line_labels(
+def _label_spans_from_lines(
     region: dict[str, Any], line_labels: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """같은 라벨이 이어지는 줄 묶음마다 자식 Region 을 만든다.
+    """같은 라벨이 이어지는 줄 묶음마다 라벨 구간을 만든다.
 
     순서를 유지한 채 연속 구간만 묶는다. 떨어져 있는 같은 라벨을 합치면 그
     사이의 다른 항목까지 bbox 안에 들어간다.
+
+    라벨이 없는 구간도 `label=None` 으로 남긴다. 어디가 미분류인지 보여야
+    "이건 광고 문구라 무시해도 된다"를 나중에 판단할 수 있다.
     """
     by_ref = {str(line["line_ref"]): line for line in region.get("lines") or []}
     runs: list[tuple[str | None, list[dict[str, Any]]]] = []
@@ -455,37 +465,28 @@ def _children_from_line_labels(
             runs[-1][1].append(line)
         else:
             runs.append((label, [line]))
-    if len(runs) < 2:
-        return [
-            {**copy.deepcopy(region), "semantic_label": runs[0][0], "needs_split": False}
-        ] if runs else []
 
-    children = []
+    spans = []
     for order, (label, lines) in enumerate(runs, start=1):
         boxes = [list(line["bbox"]) for line in lines if line.get("bbox")]
-        child = copy.deepcopy(region)
-        child.update({
-            "region_id": f"{region['region_id']}s{order:02d}",
-            "parent_id": str(region["region_id"]),
-            "split_from": str(region["region_id"]),
-            "lines": [copy.deepcopy(line) for line in lines],
+        span = {
+            "span_id": f"{region['region_id']}#{order:02d}",
+            "label": label,
+            "line_refs": [str(line["line_ref"]) for line in lines],
             "text": "\n".join(
                 str(line.get("text") or "").strip() for line in lines
                 if str(line.get("text") or "").strip()
             ),
-            "semantic_label": label,
-            "needs_split": False,
-            "needs_review": label is None,
-            "child_ids": [],
-        })
-        if boxes:
-            child["bbox"] = [
+            # 좌표는 이 구간이 가진 OCR 줄에서만 나온다. 부모 bbox 를 나누거나
+            # 새로 그리지 않는다.
+            "bbox": [
                 min(b[0] for b in boxes), min(b[1] for b in boxes),
                 max(b[2] for b in boxes), max(b[3] for b in boxes),
-            ]
-            child["bbox_source"] = "ocr_pdf_lines"
-        children.append(child)
-    return children
+            ] if boxes else None,
+            "bbox_source": "ocr_pdf_lines" if boxes else None,
+        }
+        spans.append(span)
+    return spans
 
 
 def _append_p3_label_studio(
@@ -682,9 +683,11 @@ def run_full_pipeline(
 
         # 3단계 — 상품별 라벨링.
         _label_pages(pages, product_templates, images)
-        # 4단계 — 구분값이 섞인 Region 만 줄 라벨로 쪼갠다. 라벨링 뒤라야
-        # 어디가 섞였는지(needs_split) 알 수 있다.
-        doc["split_regions"] = _split_labelled_regions(pages, product_templates, images)
+        # 4단계 — 구분값이 섞인 Region 에 줄 단위로 라벨을 더 붙인다. 라벨링
+        # 뒤라야 어디가 섞였는지(needs_split) 알 수 있다. 영역은 건드리지 않는다.
+        doc["multi_label_regions"] = _label_region_lines(
+            pages, product_templates, images,
+        )
         doc["review_units"] = review_units(pages, product_templates)
 
         p1 = build_p1(doc)

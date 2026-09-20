@@ -105,14 +105,21 @@ def _table_html(table: dict[str, Any]) -> str:
 
 def _region_html(region: dict[str, Any], index: int) -> str:
     product = str(region.get("product_id") or "unknown")
-    label = region.get("label")
+    entries = region.get("labels") or []
     chips = [
         f"<span class='chip' style='background:{_color(product)}'>{html.escape(product)}</span>",
-        (
-            f"<span class='chip lab'>{html.escape(str(label))}</span>" if label
-            else "<span class='chip none'>라벨 없음</span>"
-        ),
     ]
+    # 한 영역이 구분값을 여럿 가질 수 있다. 대표 하나만 보이면 나머지가 화면에서
+    # 사라져, 영역을 쪼개지 않기로 한 판단을 검증할 수 없다.
+    if entries:
+        chips += [
+            f"<span class='chip lab'>{html.escape(str(entry['label']))}</span>"
+            if entry.get("label")
+            else "<span class='chip none'>미분류 구간</span>"
+            for entry in entries
+        ]
+    else:
+        chips.append("<span class='chip none'>라벨 없음</span>")
     if region.get("origin") == "recovery":
         chips.append("<span class='chip alt'>복구</span>")
     if region.get("kind") == "table":
@@ -122,6 +129,17 @@ def _region_html(region: dict[str, Any], index: int) -> str:
 
     if region.get("table"):
         body = _table_html(region["table"])
+    elif len(entries) > 1:
+        # 구분값마다 어느 줄이 걸렸는지 보여야 경계 판단을 검수할 수 있다.
+        rows = []
+        for entry in entries:
+            name = (
+                f"<b>{html.escape(str(entry['label']))}</b>" if entry.get("label")
+                else "<i>미분류</i>"
+            )
+            text = html.escape(str(entry.get("text") or "")).replace("\n", "<br>")
+            rows.append(f"<div class='span'>{name}<div class='text'>{text}</div></div>")
+        body = "".join(rows)
     else:
         text = html.escape(str(region.get("selected_text") or "")).replace("\n", "<br>")
         body = f"<div class='text'>{text or '<i>(빈 텍스트)</i>'}</div>"
@@ -129,7 +147,7 @@ def _region_html(region: dict[str, Any], index: int) -> str:
     reason = region.get("selection_reason")
     note = (
         f"<div class='note'>{html.escape(str(reason))}</div>"
-        if reason and not label else ""
+        if reason and not any(entry.get("label") for entry in entries) else ""
     )
     return (
         f"<li class='region' id='r-{html.escape(str(region['region_id']))}' "
@@ -159,6 +177,21 @@ def _boxes_svg(page: dict[str, Any], width: int, height: int) -> str:
             f"<text x='{x0 + 3}' y='{y0 + font}' fill='{color}' "
             f"font-size='{font}'>{index}</text></g>"
         )
+    # 구분값이 여럿인 영역은 구간 경계를 점선으로 겹쳐 그린다. 영역을 쪼개지
+    # 않기로 했으니, 어디까지가 어느 구분값인지 화면에서 보여야 검수할 수 있다.
+    for region in page["regions"]:
+        entries = region.get("labels") or []
+        if len(entries) < 2:
+            continue
+        for entry in entries:
+            box = entry.get("bbox")
+            if not box:
+                continue
+            x0, y0, x1, y1 = (float(v) for v in box)
+            parts.append(
+                f"<rect class='span' x='{x0}' y='{y0}' "
+                f"width='{max(1.0, x1 - x0)}' height='{max(1.0, y1 - y0)}' />"
+            )
     for line in page.get("unassigned_text") or []:
         box = line.get("bbox")
         if not box:
@@ -305,6 +338,8 @@ svg.overlay .box {{ cursor:pointer; }}
 svg.overlay .box.hot rect {{ fill-opacity:.3; stroke-width:9; }}
 svg.overlay rect.orphan {{ fill:#00000000; stroke:#C62828; stroke-width:3;
   stroke-dasharray:10 7; }}
+svg.overlay rect.span {{ fill:#00000000; stroke:#2E7D32; stroke-width:3;
+  stroke-dasharray:6 5; }}
 ol.regions {{ list-style:none; margin:0; padding:0; }}
 .region {{ background:#fff; border:1px solid var(--line); border-radius:6px;
   padding:8px 10px; margin-bottom:6px; scroll-margin-top:100px; }}
@@ -319,6 +354,9 @@ ol.regions {{ list-style:none; margin:0; padding:0; }}
 .chip.alt {{ background:#455A64; }}
 .chip.rev {{ background:#EF6C00; }}
 .text {{ white-space:pre-wrap; word-break:break-word; }}
+.span {{ border-left:3px solid var(--line); padding-left:8px; margin:4px 0; }}
+.span b {{ font-size:12px; color:#2E7D32; }}
+.span i {{ font-size:12px; color:var(--muted); }}
 .note {{ font-size:11px; color:var(--muted); margin-top:4px; }}
 table.grid {{ border-collapse:collapse; font-size:12px; width:100%; }}
 table.grid th, table.grid td {{ border:1px solid var(--line); padding:3px 6px; }}

@@ -14,6 +14,38 @@ def _line_refs(region: dict[str, Any]) -> list[str]:
     return [str(line.get("line_ref") or "") for line in region.get("lines") or []]
 
 
+def _label_entries(region: dict[str, Any], refs: list[str]) -> list[dict[str, Any]]:
+    """영역의 구분값 목록.
+
+    줄 단위 라벨링을 거친 영역은 구간이 여럿이다. 그렇지 않으면 대표 라벨
+    하나가 영역 전체를 가리킨다. 어느 쪽이든 항목마다 `line_refs` 와 `bbox` 가
+    있어 그 부분만 짚을 수 있다.
+    """
+    spans = region.get("label_spans") or []
+    if spans:
+        return [
+            {
+                "span_id": span["span_id"],
+                "label": span.get("label"),
+                "text": span.get("text") or "",
+                "line_refs": list(span.get("line_refs") or []),
+                "bbox": copy.deepcopy(span.get("bbox")),
+                "bbox_source": span.get("bbox_source") or "ocr_pdf_lines",
+            }
+            for span in spans
+        ]
+    if not region.get("semantic_label"):
+        return []
+    return [{
+        "span_id": f"{region['region_id']}#01",
+        "label": region["semantic_label"],
+        "text": str(region.get("text") or ""),
+        "line_refs": refs,
+        "bbox": copy.deepcopy(region.get("bbox")),
+        "bbox_source": region.get("bbox_source") or "paddlex_layout",
+    }]
+
+
 def build_p1(document: dict[str, Any]) -> dict[str, Any]:
     evidence = copy.deepcopy(document)
     evidence["contract"] = {
@@ -92,11 +124,12 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
                     (region.get("label_decision") or {}).get("reason")
                     or (region.get("semantic_decision") or {}).get("reason")
                 ),
+                # `label` 은 영역을 하나로 대표해야 하는 화면·요약용이다.
+                # 실제 근거는 `labels` 로, 한 영역에 구분값이 여럿 있으면 여러
+                # 항목이 된다. 각 항목의 bbox 는 그 항목이 가진 OCR 줄에서만
+                # 나오므로 영역을 쪼개지 않고도 그 부분만 하이라이트할 수 있다.
                 "label": region.get("semantic_label"),
-                "labels": ([{
-                    "label": region.get("semantic_label"),
-                    "line_refs": refs,
-                }] if region.get("semantic_label") else []),
+                "labels": _label_entries(region, refs),
                 "line_refs": refs,
                 "bbox_source": region.get("bbox_source") or "paddlex_layout",
                 "bbox_quality": region.get("bbox_quality") or "exact",
@@ -121,12 +154,32 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
                 "canvas": canvas,
                 "bbox_quality": item["bbox_quality"],
             }
-            if item["label"]:
-                labels[str(item["label"])].append({
+            # 구분값 단위로도 짚을 수 있어야 한다. 한 영역에 `가입대상`과
+            # `가입금액`이 함께 있을 때 영역 전체를 하이라이트하면 관련 없는
+            # 항목까지 강조된다.
+            for entry in item["labels"]:
+                if not entry.get("bbox"):
+                    continue
+                location_index[str(entry["span_id"])] = {
+                    "page_no": page_no,
+                    "bbox": copy.deepcopy(entry["bbox"]),
+                    "canvas": canvas,
+                    "bbox_quality": item["bbox_quality"],
+                    "region_id": region_id,
+                    "label": entry.get("label"),
+                }
+            # 대표 라벨이 아니라 **구간마다** 색인한다. 한 영역이 여러 구분값을
+            # 가질 때 대표 하나만 넣으면 나머지를 이 색인으로 찾을 수 없다.
+            for entry in item["labels"]:
+                if not entry.get("label"):
+                    continue
+                labels[str(entry["label"])].append({
                     "page_no": page_no,
                     "region_id": region_id,
+                    "span_id": entry["span_id"],
                     "product_id": item["product_id"],
-                    "line_refs": refs,
+                    "line_refs": list(entry.get("line_refs") or []),
+                    "bbox": copy.deepcopy(entry.get("bbox")),
                 })
 
         unassigned = []
@@ -178,7 +231,11 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
             "version": P3_VERSION,
             "source_evidence_version": P1_VERSION,
             "review_unit": "region",
-            "result_reference": "심의 결과는 evidence_region_ids를 반환하고 bbox는 location_index로 조회",
+            "result_reference": (
+                "심의 결과는 evidence_region_ids를 반환하고 bbox는 location_index로 조회. "
+                "영역 전체는 region_id, 그 안의 구분값 하나만 짚을 때는 "
+                "labels[].span_id(예: p1_r001#02)를 쓴다"
+            ),
         },
         "document": {
             key: copy.deepcopy(evidence.get(key))
