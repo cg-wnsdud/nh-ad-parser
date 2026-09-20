@@ -18,6 +18,7 @@ import reading
 import tables
 from export_v2 import build_p1, build_p3
 from recovery import build_recovery_candidates
+import semantic
 from semantic import analyze_page_context, analyze_product_labels
 from templates import PAGE_COMMON, resolve_product_templates, review_units
 
@@ -387,6 +388,108 @@ def _label_pages(
         page["label_analysis"] = "\n".join(value for value in notes if value)
 
 
+def _split_labelled_regions(
+    pages: list[dict[str, Any]],
+    product_templates: dict[str, dict[str, Any]],
+    images: dict[int, Any],
+) -> int:
+    """구분값이 여럿 섞인 Region 을 줄 라벨로 쪼갠다.
+
+    Region 당 라벨 하나라는 계약 때문에, 여러 항목이 한 영역에 들어가면 나머지
+    구분값이 통째로 사라진다 — 실측(2026-09-20, `1. 예금성상품(거치식)` p1_r001):
+    `가입대상개인 / 가입금액100만원 이상 / (원 단위)` 가 `가입대상` 하나만 받았다.
+
+    부모를 자식들로 **대체**한다. 부모를 남기면 같은 줄을 부모와 자식이 함께
+    소유해 P3 의 "줄 중복 소유 0" 계약이 깨진다. 좌표는 자식이 가진 줄의
+    합집합이라 새로 만들지 않는다.
+    """
+    split_count = 0
+    for page in pages:
+        image = images.get(int(page["page_no"]))
+        targets = [
+            region for region in page.get("regions") or []
+            if region.get("needs_split")
+            and region.get("kind") != "table"
+            and len(region.get("lines") or []) >= 2
+        ]
+        for region in targets:
+            resolution = product_templates.get(
+                str(region.get("product_id") or "unknown")
+            ) or {}
+            labels = list(resolution.get("labels") or [])
+            if not labels:
+                continue
+            result = semantic.analyze_region_lines(
+                image, region,
+                template_id=resolution.get("template_id"), labels=labels,
+            )
+            children = _children_from_line_labels(region, result["line_labels"])
+            if len(children) < 2:
+                # 실제로는 한 구분값뿐이었다. 쪼개지 않고 그 라벨만 반영한다.
+                if children:
+                    region["semantic_label"] = children[0]["semantic_label"]
+                    region["needs_split"] = False
+                continue
+            index = page["regions"].index(region)
+            page["regions"][index:index + 1] = children
+            split_count += 1
+        if targets:
+            _assign_reading_order(page)
+    return split_count
+
+
+def _children_from_line_labels(
+    region: dict[str, Any], line_labels: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """같은 라벨이 이어지는 줄 묶음마다 자식 Region 을 만든다.
+
+    순서를 유지한 채 연속 구간만 묶는다. 떨어져 있는 같은 라벨을 합치면 그
+    사이의 다른 항목까지 bbox 안에 들어간다.
+    """
+    by_ref = {str(line["line_ref"]): line for line in region.get("lines") or []}
+    runs: list[tuple[str | None, list[dict[str, Any]]]] = []
+    for item in line_labels:
+        line = by_ref.get(str(item.get("line_ref")))
+        if line is None:
+            continue
+        label = item.get("label")
+        if runs and runs[-1][0] == label:
+            runs[-1][1].append(line)
+        else:
+            runs.append((label, [line]))
+    if len(runs) < 2:
+        return [
+            {**copy.deepcopy(region), "semantic_label": runs[0][0], "needs_split": False}
+        ] if runs else []
+
+    children = []
+    for order, (label, lines) in enumerate(runs, start=1):
+        boxes = [list(line["bbox"]) for line in lines if line.get("bbox")]
+        child = copy.deepcopy(region)
+        child.update({
+            "region_id": f"{region['region_id']}s{order:02d}",
+            "parent_id": str(region["region_id"]),
+            "split_from": str(region["region_id"]),
+            "lines": [copy.deepcopy(line) for line in lines],
+            "text": "\n".join(
+                str(line.get("text") or "").strip() for line in lines
+                if str(line.get("text") or "").strip()
+            ),
+            "semantic_label": label,
+            "needs_split": False,
+            "needs_review": label is None,
+            "child_ids": [],
+        })
+        if boxes:
+            child["bbox"] = [
+                min(b[0] for b in boxes), min(b[1] for b in boxes),
+                max(b[2] for b in boxes), max(b[3] for b in boxes),
+            ]
+            child["bbox_source"] = "ocr_pdf_lines"
+        children.append(child)
+    return children
+
+
 def _append_p3_label_studio(
     tasks: list[dict[str, Any]], p3_documents: list[dict[str, Any]], out: Path,
 ) -> None:
@@ -581,6 +684,9 @@ def run_full_pipeline(
 
         # 3단계 — 상품별 라벨링.
         _label_pages(pages, product_templates, images)
+        # 4단계 — 구분값이 섞인 Region 만 줄 라벨로 쪼갠다. 라벨링 뒤라야
+        # 어디가 섞였는지(needs_split) 알 수 있다.
+        doc["split_regions"] = _split_labelled_regions(pages, product_templates, images)
         doc["review_units"] = review_units(pages, product_templates)
 
         p1 = build_p1(doc)

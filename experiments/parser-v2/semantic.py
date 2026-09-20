@@ -612,3 +612,105 @@ def validate_labels(
         "analysis": str(result.get("analysis") or ""),
         "region_labels": [output[region_id] for region_id in region_ids],
     }
+
+
+# ── 3단계 · 줄 단위 분할 ────────────────────────────────────────────
+
+
+def _line_label_schema(line_refs: list[str], labels: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "analysis": {"type": "string"},
+            "line_labels": {
+                "type": "array",
+                "minItems": len(line_refs),
+                "maxItems": len(line_refs),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "line_ref": {"type": "string", "enum": line_refs or ["__none__"]},
+                        "label": {"type": "string", "enum": [*labels, ABSTAIN]},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["line_ref", "label", "confidence"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["analysis", "line_labels"],
+        "additionalProperties": False,
+    }
+
+
+def analyze_region_lines(
+    image: Image.Image,
+    region: dict[str, Any],
+    *,
+    template_id: str | None,
+    labels: list[str],
+) -> dict[str, Any]:
+    """한 Region 안의 줄마다 구분값을 정한다.
+
+    Region 하나에 구분값이 여럿 섞여 있을 때만 부른다. 실측(2026-09-20,
+    `1. 예금성상품(거치식)` p1_r001): `가입대상개인 / 가입금액100만원 이상 /
+    (원 단위)` 세 줄이 한 Region 이라 라벨이 `가입대상` 하나만 붙고 `가입금액`
+    구분값이 사라졌다.
+
+    줄에는 이미 bbox 가 있으므로 좌표를 새로 만들 필요가 없다. 모델은 줄 ID 에
+    라벨만 붙인다.
+    """
+    lines = [line for line in region.get("lines") or [] if line.get("line_ref")]
+    if len(lines) < 2 or not labels:
+        return {"analysis": "", "line_labels": [], "calls": 0}
+    line_refs = [str(line["line_ref"]) for line in lines]
+    rows = "\n".join(
+        f"- {line['line_ref']} {' '.join(str(line.get('text') or '').split())}"
+        for line in lines
+    )
+    prompt = f"""당신은 농협 금융광고 구분값 라벨러입니다.
+
+아래는 영역 하나 안의 줄 목록입니다. 이 영역에는 서로 다른 구분값이 섞여 있습니다.
+**줄마다** 어느 구분값에 속하는지 정하세요.
+
+적용 템플릿: {template_id or '공통'}
+허용 라벨: {', '.join(labels)}
+
+- 아래 LINE ID {len(line_refs)}개를 **모두** line_labels 배열에 정확히 한 번씩 넣으세요.
+- 판정은 반드시 배열에 넣으세요. analysis 에 문장으로 적으면 무효입니다.
+- 앞줄에 딸린 설명·단위·괄호는 **앞줄과 같은 라벨**을 주세요.
+  예) `가입금액100만원 이상` 다음의 `(원 단위)` 는 같은 가입금액입니다.
+- 허용 라벨 중 맞는 것이 없으면 {ABSTAIN} 을 고르세요.
+
+영역 텍스트 줄:
+{rows}
+"""
+    result = vlm_client.chat_json(
+        [
+            {"type": "text", "text": prompt},
+            vlm_client.image_part(image, box=(1200, 1200), quality=92),
+        ],
+        schema_name="parser_v2_region_line_labels",
+        schema=_line_label_schema(line_refs, labels),
+        max_tokens=min(10000, 800 + 200 * len(line_refs)),
+    )
+    allowed = set(labels)
+    seen: dict[str, dict[str, Any]] = {}
+    for item in result.get("line_labels") or []:
+        ref = str(item.get("line_ref") or "")
+        if ref not in set(line_refs) or ref in seen:
+            continue
+        label = item.get("label")
+        seen[ref] = {
+            "line_ref": ref,
+            "label": label if label in allowed else None,
+            "confidence": float(item.get("confidence") or 0.0),
+        }
+    return {
+        "analysis": str(result.get("analysis") or ""),
+        "line_labels": [
+            seen.get(ref, {"line_ref": ref, "label": None, "confidence": 0.0})
+            for ref in line_refs
+        ],
+        "calls": 1,
+    }
