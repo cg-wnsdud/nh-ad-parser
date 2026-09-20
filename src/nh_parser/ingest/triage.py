@@ -305,6 +305,34 @@ def _crosses_divider(box_a, box_b, dividers) -> bool:
     return any(lo <= x <= hi and bottom < y_hi and top > y_lo for x, bottom, top in dividers)
 
 
+def _place_orphan_spaces(pending, runs, buckets, dividers) -> None:
+    """소속 런을 모르는 공백을 가장 가까운 런에 넣는다. 구분선은 넘지 않는다.
+
+    베이스라인이 겹치는 런을 먼저 보고, 없으면 세로 거리까지 포함해 가장 가까운
+    런에 붙인다. 공백도 정본의 일부라 버리지 않는다 — 통째로 지웠다가
+    `공무원연금공단에서확인된`처럼 띄어쓰기를 잃은 전례가 있다.
+    """
+    for entry in pending:
+        tight = entry[1]
+        center = (tight[1] + tight[3]) / 2.0
+        best: int | None = None
+        best_key: tuple[int, float] | None = None
+        for slot, run in enumerate(runs):
+            box = run["box"]
+            if _crosses_divider(tight, box, dividers):
+                continue
+            on_baseline = box[1] <= center <= box[3]
+            dx = 0.0 if box[0] <= tight[0] <= box[2] else min(
+                abs(tight[0] - box[2]), abs(box[0] - tight[2])
+            )
+            dy = 0.0 if on_baseline else min(abs(center - box[1]), abs(center - box[3]))
+            key = (0 if on_baseline else 1, dx + dy)
+            if best_key is None or key < best_key:
+                best, best_key = slot, key
+        if best is not None:
+            buckets[best].append(entry)
+
+
 def _lines_from_runs(chars, runs, dividers) -> list[list] | None:
     """런의 베이스라인으로 줄을 정하고 글자를 그 줄에 담는다.
 
@@ -316,11 +344,25 @@ def _lines_from_runs(chars, runs, dividers) -> list[list] | None:
         return None
     index = {r["key"]: i for i, r in enumerate(runs)}
     buckets: list[list] = [[] for _ in runs]
+    pending: list = []
     for entry in chars:
         slot = index.get(entry[4])
         if slot is None:
-            return None  # 소속을 모르는 글자가 있으면 이 경로를 쓰지 않는다
+            # **공백은 기하학으로 붙이고 이 경로를 계속 쓴다.** 예전에는 소속 모르는
+            # 글자가 하나라도 있으면 통째로 폴백했는데, pdfium 이 홀로 놓인 공백
+            # 글리프의 TEXT 객체를 돌려주지 않는 일이 잦아 **거의 모든 PDF 가
+            # 폴백으로 떨어졌다** — 실측(2026-09-20, 43페이지): 42페이지가 폴백,
+            # 소속 불명 글자 828개가 **전부 공백**(비공백 0개)이었다.
+            # 폴백인 글자 군집에는 구분선 인식이 없어 2단 편집물의 좌우 칸이 한 줄로
+            # 붙는다(`1. 예금성상품(적립식)`: `만기후 금리중도해지 및 만기후가입혜택
+            # 가입한 모든 고객에게` — 세로 구분선을 넘어 오른쪽 상품까지 삼킴).
+            # 공백 1~2%를 위해 나머지 98% 의 구조 정보를 버리던 셈이다.
+            if entry[0].isspace():
+                pending.append(entry)
+                continue
+            return None  # 글자가 섞이면 종전대로 폴백한다 — 텍스트를 잃지 않는 쪽이 먼저다
         buckets[slot].append(entry)
+    _place_orphan_spaces(pending, runs, buckets, dividers)
 
     live = [(runs[i], buckets[i]) for i in range(len(runs)) if buckets[i]]
     if not live:
