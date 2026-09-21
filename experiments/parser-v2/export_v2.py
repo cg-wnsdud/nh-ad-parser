@@ -6,7 +6,7 @@ from typing import Any
 
 
 P1_VERSION = "nh-ad-parse-evidence-v2"
-P3_VERSION = "nh-ad-region-review-input-v3"
+P3_VERSION = "nh-ad-region-review-input-v4"
 
 
 def build_p1(document: dict[str, Any]) -> dict[str, Any]:
@@ -83,6 +83,18 @@ def _review_units(evidence: dict[str, Any], kept_ids: set[str]) -> list[dict[str
     return output
 
 
+def _text_source(region: dict[str, Any]) -> str:
+    """정본 텍스트를 OCR/PDF 가 읽었는지 VLM 이 썼는지만 남긴다.
+
+    P3 는 후보 텍스트를 싣지 않으므로, 이 값이 없으면 "이 문장이 광고에 찍힌
+    그대로인지 모델이 고쳐 쓴 것인지"를 P1 을 열어야만 알 수 있다. 근거의 등급이
+    갈리는 값이라 Region 마다 채운다. 어느 후보였는지·일치도·판정 사유 같은
+    세부는 같은 ``region_id`` 로 P1 에서 조회한다.
+    """
+    source = str(region.get("text_source") or "")
+    return "vlm" if source.startswith("vlm") else "ocr"
+
+
 def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
     """P1을 Region 중심의 간결한 심의 입력으로 투영한다.
 
@@ -115,6 +127,7 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
                 "labels": labels,
                 "kind": "table" if region.get("table") else "text",
                 "needs_review": bool(region.get("needs_review")),
+                "text_source": _text_source(region),
             }
             table = _compact_table(region.get("table"))
             if table:
@@ -132,7 +145,7 @@ def build_p3(evidence: dict[str, Any]) -> dict[str, Any]:
             "version": P3_VERSION,
             "source_evidence_version": P1_VERSION,
             "review_unit": "region",
-            "text_policy": "one VLM-selected final text per region; all evidence stays in P1",
+            "text_policy": "one evidence-verified final text per region; all candidates stay in P1",
             "reference_policy": "P1 and P3 share region_id; review results return region_ids",
         },
         "document": {

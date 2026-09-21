@@ -23,16 +23,16 @@ def _module(name: str, filename: str):
 reading = _module("parser_v2_reading", "reading.py")
 
 
-def test_matching_reading_selects_the_vlm_reader_text():
+def test_matching_reading_verifies_but_keeps_digital_parser_text():
     region = {"bbox": [0, 0, 10, 10], "text": "가입금액 100만원 이상",
               "text_source": "digital_ocr_lines"}
 
     status = reading.apply_reading(
         region, {"text": "가입금액 100만원 이상", "confidence": 0.95})
 
-    assert status == "agree"
+    assert status == "parser_verified"
     assert region["text"] == "가입금액 100만원 이상"
-    assert region["text_source"] == "vlm_reader"
+    assert region["text_source"] == "digital_ocr_lines"
     assert region.get("needs_review") is not True
     # 대조 근거는 남긴다.
     assert region["text_candidates"]["vlm_reading"] == "가입금액 100만원 이상"
@@ -82,7 +82,7 @@ def test_blank_reading_never_erases_the_ocr_text():
     assert region["text_source"] == "digital_ocr_lines"
 
 
-def test_judge_text_wins_when_reader_and_parser_disagree():
+def test_digital_parser_text_wins_when_judge_disagrees():
     region = {"bbox": [0, 0, 10, 10], "text": "기본금리 연 2.25%",
               "text_source": "digital_ocr_lines"}
     reader = {"text": "기본금리 연 2.26%", "confidence": 0.9}
@@ -91,11 +91,28 @@ def test_judge_text_wins_when_reader_and_parser_disagree():
 
     status = reading.apply_reading(region, reader, judge)
 
-    assert status == "judge_selected"
-    assert region["text"] == "기본금리 연 2.26%"
-    assert region["text_source"] == "vlm_judge"
+    assert status == "parser_preserved"
+    assert region["text"] == "기본금리 연 2.25%"
+    assert region["text_source"] == "digital_ocr_lines"
+    assert region["needs_review"] is True
+    assert "digital_text_vlm_disagreement" in region["review_reasons"]
     assert region["text_candidates"]["parser_selected"] == "기본금리 연 2.25%"
     assert region["vlm_judge"]["source"] == "reader"
+
+
+def test_judge_can_correct_non_digital_ocr_text():
+    region = {"bbox": [0, 0, 10, 10], "text": "기본금리 연 2.2S%",
+              "text_source": "paddlex_block_content",
+              "lines": [{"text": "기본금리 연 2.2S%", "source": "ocr"}]}
+    reader = {"text": "기본금리 연 2.25%", "confidence": 0.9}
+    judge = {"text": "기본금리 연 2.25%", "confidence": 0.98,
+             "source": "reader", "analysis": "이미지는 5"}
+
+    status = reading.apply_reading(region, reader, judge)
+
+    assert status == "judge_selected"
+    assert region["text"] == "기본금리 연 2.25%"
+    assert region["text_source"] == "vlm_judge"
 
 
 def test_table_regions_are_never_re_read():
@@ -154,10 +171,10 @@ def test_a_single_digit_difference_is_flagged():
 
     status = reading.apply_reading(region, {"text": "기본금리 연 2.26%", "confidence": 0.9})
 
-    assert status == "disagree"
+    assert status == "parser_preserved"
     assert region["needs_review"] is True
-    # Judge가 없으면 Reader를 선택하되 OCR 후보도 P1에 남긴다.
-    assert region["text"] == "기본금리 연 2.26%"
+    # PDF 내장 텍스트는 정본으로 유지하고 VLM 후보만 P1에 남긴다.
+    assert region["text"] == "기본금리 연 2.25%"
     assert region["text_candidates"]["parser_selected"] == "기본금리 연 2.25%"
     assert region["text_candidates"]["vlm_reading"] == "기본금리 연 2.26%"
 

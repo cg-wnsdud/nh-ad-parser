@@ -25,6 +25,7 @@ from typing import Any
 from PIL import Image
 
 from nh_parser.vlm import client as vlm_client
+from quality import flag
 
 # 공백을 지우고 비교하므로 띄어쓰기·줄바꿈만 다른 경우는 1.000 이 나온다.
 # 임계값은 실측으로 골랐다(2026-09-20).
@@ -131,7 +132,18 @@ def _crop(image: Image.Image, box: list[int]) -> Image.Image | None:
     y1 = min(image.height, int(box[3]) + CROP_PAD)
     if x1 - x0 < 4 or y1 - y0 < 4:
         return None
-    crop = image.crop((x0, y0, x1, y1))
+    raw = image.crop((x0, y0, x1, y1)).convert("RGB")
+    # 여백은 글자가 잘리지 않게 모델 입력 크기를 확보하기 위한 것이지, 이웃 Region을
+    # 읽으라는 뜻이 아니다. 실제 bbox 밖을 흰색으로 가려 r027/r028처럼 맞닿은 영역의
+    # 문장이 서로 복사되는 것을 막는다.
+    crop = Image.new("RGB", raw.size, "white")
+    inner = (
+        max(0, int(box[0]) - x0), max(0, int(box[1]) - y0),
+        min(raw.width, int(box[2]) - x0), min(raw.height, int(box[3]) - y0),
+    )
+    if inner[2] <= inner[0] or inner[3] <= inner[1]:
+        return None
+    crop.paste(raw.crop(inner), (inner[0], inner[1]))
     scale = MIN_CROP_SIDE / max(1, min(crop.size))
     if scale > 1.0:
         scale = min(scale, 4.0)
@@ -229,12 +241,42 @@ def clean_text(value: Any) -> str:
     return text.strip()
 
 
+def _has_digital_evidence(region: dict[str, Any]) -> bool:
+    """PDF 내장 텍스트처럼 글자와 좌표를 직접 얻은 Region인지 확인한다."""
+    if str(region.get("text_source") or "").startswith("digital_"):
+        return True
+    return any(
+        str(line.get("source") or "").casefold() == "digital"
+        for line in region.get("lines") or []
+    )
+
+
+def _store_judge(region: dict[str, Any], judge: dict[str, Any] | None) -> str:
+    if not judge or not _normalized(judge.get("text")):
+        return ""
+    final_text = str(judge["text"])
+    region["vlm_judge"] = {
+        "text": final_text,
+        "confidence": judge.get("confidence"),
+        "source": judge.get("source"),
+        "analysis": judge.get("analysis"),
+    }
+    region["text_candidates"]["vlm_judge"] = final_text
+    return final_text
+
+
 def apply_reading(
     region: dict[str, Any],
     reading: dict[str, Any],
     judge: dict[str, Any] | None = None,
 ) -> str:
-    """Reader/Judge 결과를 반영하고 VLM 최종 전사를 Region 정본으로 선택한다."""
+    """Reader/Judge를 대조하되 직접 추출한 PDF 텍스트는 잃지 않는다.
+
+    디지털 PDF 텍스트는 글자와 줄 좌표가 원본에서 직접 나온 근거다. VLM이 이를
+    고쳐 쓰면 실제로 없던 문장을 더하거나 ``(①+②)`` 같은 기호를 지운 사례가 있어,
+    VLM 결과는 후보로만 보존하고 parser 텍스트를 정본으로 둔다. 이미지 OCR만 있는
+    Region은 기존처럼 Reader/Judge가 교정할 수 있다.
+    """
     ocr_text = str(region.get("text") or "")
     vlm_text = str(reading.get("text") or "")
     score = agreement(ocr_text, vlm_text)
@@ -249,20 +291,24 @@ def apply_reading(
     if not _normalized(vlm_text):
         region["reading_status"] = "vlm_blank"
         return "vlm_blank"
+
+    final_text = _store_judge(region, judge) or vlm_text
+    # 디지털 PDF 텍스트는 VLM 검증 결과가 같아도 출처를 OCR/PDF로 유지한다. 다르면
+    # 후보를 P1에 남기고 파싱 품질 검수 대상으로 올리되 원문을 바꾸지 않는다.
+    if ocr_text and _has_digital_evidence(region):
+        if _normalized(ocr_text) == _normalized(final_text):
+            region["reading_status"] = "parser_verified"
+            return "parser_verified"
+        flag(region, "digital_text_vlm_disagreement")
+        region["reading_status"] = "parser_preserved"
+        return "parser_preserved"
+
     if judge is not None and _normalized(judge.get("text")):
-        final_text = str(judge["text"])
-        region["vlm_judge"] = {
-            "text": final_text,
-            "confidence": judge.get("confidence"),
-            "source": judge.get("source"),
-            "analysis": judge.get("analysis"),
-        }
-        region["text_candidates"]["vlm_judge"] = final_text
         region["text"] = final_text
         region["text_source"] = "vlm_judge"
         region["reading_status"] = "judge_selected"
         if float(judge.get("confidence") or 0.0) < 0.7:
-            region["needs_review"] = True
+            flag(region, "vlm_judge_low_confidence")
         if not _normalized(ocr_text):
             region["bbox_quality"] = "region"
         return "judge_selected"
@@ -273,7 +319,7 @@ def apply_reading(
     region["text_source"] = "vlm_reader"
     if not _normalized(ocr_text):
         region["bbox_quality"] = "region"
-        region["needs_review"] = True
+        flag(region, "vlm_only_text")
         region["reading_status"] = "vlm_only"
         return "vlm_only"
     if score >= AGREE:
@@ -282,7 +328,7 @@ def apply_reading(
     # Judge를 부르지 못한 경우에도 사용자 선택에 따라 Reader 결과를 정본으로 쓰되,
     # 불일치 사실은 검수 대상으로 남긴다.
     region["reading_status"] = "disagree"
-    region["needs_review"] = True
+    flag(region, "ocr_vlm_disagreement")
     return "disagree"
 
 
@@ -291,6 +337,7 @@ def read_page(
 ) -> dict[str, int]:
     """페이지의 Region 을 훑어 판독하고 통계를 돌려준다."""
     stats = {"read": 0, "agree": 0, "disagree": 0, "judge_selected": 0,
+             "parser_verified": 0, "parser_preserved": 0,
              "vlm_only": 0, "vlm_blank": 0, "skipped": 0, "failed": 0,
              "judge_failed": 0}
     for region in page.get("regions") or []:
@@ -304,7 +351,7 @@ def read_page(
             # 그대로 남고 검수 대상으로만 표시된다.
             region["reading_status"] = "failed"
             region["vlm_reading"] = {"error": str(exc)[:200]}
-            region["needs_review"] = True
+            flag(region, "vlm_read_failed")
             stats["failed"] += 1
             continue
         if reading is None:
