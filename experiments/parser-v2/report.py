@@ -276,7 +276,10 @@ table.meta th, table.meta td {{ border:1px solid var(--line); padding:4px 10px;
 table.meta th {{ background:#eef1f4; font-weight:600; }}
 .split {{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px;
   align-items:start; }}
-.left {{ position:sticky; top:86px; }}
+/* 자체 스크롤을 준다. 페이지가 세로로 길면 sticky 만으로는 아래쪽 Region 이
+   화면 밖으로 잘려, 오른쪽에서 눌러도 보여줄 자리가 없다. */
+.left {{ position:sticky; top:86px; max-height:calc(100vh - 100px);
+  overflow:auto; scrollbar-width:thin; }}
 .canvas {{ position:relative; background:#fff; border:1px solid var(--line);
   border-radius:6px; overflow:hidden; }}
 .canvas img {{ display:block; width:100%; }}
@@ -285,14 +288,16 @@ svg.overlay rect {{ fill-opacity:.06; stroke-width:4; }}
 svg.overlay text {{ font-weight:700; paint-order:stroke; stroke:#fff; stroke-width:3; }}
 svg.overlay .box {{ cursor:pointer; }}
 svg.overlay .box.hot rect {{ fill-opacity:.3; stroke-width:9; }}
+svg.overlay .box.sel rect {{ fill-opacity:.34; stroke-width:12; }}
 svg.overlay rect.orphan {{ fill:#00000000; stroke:#C62828; stroke-width:3;
   stroke-dasharray:10 7; }}
 svg.overlay rect.span {{ fill:#00000000; stroke:#2E7D32; stroke-width:3;
   stroke-dasharray:6 5; }}
 ol.regions {{ list-style:none; margin:0; padding:0; }}
 .region {{ background:#fff; border:1px solid var(--line); border-radius:6px;
-  padding:8px 10px; margin-bottom:6px; scroll-margin-top:100px; }}
+  padding:8px 10px; margin-bottom:6px; scroll-margin-top:100px; cursor:pointer; }}
 .region.hot {{ border-color:var(--ink); box-shadow:0 0 0 2px rgba(28,36,48,.14); }}
+.region.sel {{ border-color:#EF6C00; box-shadow:0 0 0 2px rgba(239,108,0,.28); }}
 .head {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:4px; }}
 .seq {{ min-width:22px; height:22px; border-radius:11px; background:var(--ink);
   color:#fff; font-size:11px; display:grid; place-items:center; }}
@@ -335,16 +340,38 @@ if (tabs.length) show(tabs[0].dataset.key);
 
 // 박스와 오른쪽 항목을 양방향으로 연결한다. 어느 쪽을 봐도 짝을 찾을 수 있어야 한다.
 function link(root) {{
-  const mark = (rid, on) => {{
-    root.querySelectorAll(`[data-rid="${{CSS.escape(rid)}}"]`)
-        .forEach(el => el.classList.toggle('hot', on));
+  const left = root.querySelector('.left');
+  const pick = (rid) => root.querySelectorAll(`[data-rid="${{CSS.escape(rid)}}"]`);
+  const mark = (rid, cls, on) => pick(rid).forEach(el => el.classList.toggle(cls, on));
+
+  // 왼쪽은 자체 스크롤이라 창을 건드리지 않고 패널 안에서만 옮긴다. scrollIntoView 를
+  // 쓰면 창까지 따라 움직여 sticky 로 고정해 둔 페이지가 제자리를 벗어난다.
+  const revealBox = (box) => {{
+    if (!left || !box) return;
+    const b = box.getBoundingClientRect(), p = left.getBoundingClientRect();
+    left.scrollTo({{
+      top: left.scrollTop + (b.top - p.top) - (p.height - b.height) / 2,
+      behavior: 'smooth',
+    }});
   }};
+
+  let chosen = null;
   root.querySelectorAll('[data-rid]').forEach(el => {{
-    el.addEventListener('mouseenter', () => mark(el.dataset.rid, true));
-    el.addEventListener('mouseleave', () => mark(el.dataset.rid, false));
+    el.addEventListener('mouseenter', () => mark(el.dataset.rid, 'hot', true));
+    el.addEventListener('mouseleave', () => mark(el.dataset.rid, 'hot', false));
     el.addEventListener('click', () => {{
-      const target = root.querySelector(`li[data-rid="${{CSS.escape(el.dataset.rid)}}"]`);
-      if (target) target.scrollIntoView({{behavior:'smooth', block:'center'}});
+      const rid = el.dataset.rid;
+      if (chosen) mark(chosen, 'sel', false);
+      mark(rid, 'sel', true);
+      chosen = rid;
+      // 누른 쪽이 아니라 **반대쪽**을 움직인다. 누른 자리를 스크롤하면 아무 일도
+      // 일어나지 않는데, 이전 코드가 양쪽 모두 오른쪽 목록으로 보내고 있었다.
+      if (el.closest('.left')) {{
+        const item = root.querySelector(`li[data-rid="${{CSS.escape(rid)}}"]`);
+        if (item) item.scrollIntoView({{behavior:'smooth', block:'center'}});
+      }} else {{
+        revealBox(root.querySelector(`.left [data-rid="${{CSS.escape(rid)}}"]`));
+      }}
     }});
   }});
 }}
