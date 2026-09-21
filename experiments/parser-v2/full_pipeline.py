@@ -356,7 +356,14 @@ def _place_tables(page: dict[str, Any], image: Image.Image) -> None:
             str(note.get("text") or "").strip() for note in grid.get("notes") or []
             if str(note.get("text") or "").strip()
         )
-        complete = not grid["unplaced_line_refs"] and grid["confidence"] >= 0.7
+        slots = max(1, int(grid["grid"]["rows"]) * int(grid["grid"]["cols"]))
+        density = len([cell for cell in grid["cells"] if str(cell.get("text") or "").strip()]) / slots
+        region["table_cell_density"] = round(density, 4)
+        complete = (
+            not grid["unplaced_line_refs"]
+            and grid["confidence"] >= 0.7
+            and density >= 0.3
+        )
         if complete:
             region["text"] = "\n\n".join(
                 value for value in (grid["text_grid"], note_text) if value
@@ -372,6 +379,8 @@ def _place_tables(page: dict[str, Any], image: Image.Image) -> None:
                 flag(region, "table_unplaced_lines")
             if grid["confidence"] < 0.7:
                 flag(region, "table_low_confidence")
+            if density < 0.3:
+                flag(region, "table_sparse_grid")
         placed += 1
     page["table_count"] = placed
 

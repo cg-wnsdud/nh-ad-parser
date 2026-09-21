@@ -219,6 +219,32 @@ def test_partial_table_keeps_all_source_lines_as_selected_text(monkeypatch):
     assert "table_unplaced_lines" in region["review_reasons"]
 
 
+def test_sparse_table_grid_keeps_source_lines_and_flags_review(monkeypatch):
+    lines = _benefit_table()[:6]
+    source = "\n".join(line["text"] for line in lines)
+    region = {
+        "region_id": "p1_r001", "bbox": [560, 1842, 1369, 1892],
+        "kind": "table", "text": source,
+        "text_source": "digital_ocr_lines", "lines": lines,
+    }
+    page = {"page_no": 1, "regions": [region], "table_areas": []}
+    monkeypatch.setattr(full_pipeline.tables, "place_cells", lambda image, item: {
+        "grid": {"rows": 6, "cols": 6},
+        "cells": [
+            {"row": 0, "col": 0, "text": "담보명"},
+            {"row": 1, "col": 0, "text": "24시간 사고접수"},
+        ],
+        "notes": [], "unplaced_line_refs": [], "confidence": 1.0,
+        "analysis": "과도하게 빈 격자", "text_grid": "| 담보명 |",
+    })
+
+    full_pipeline._place_tables(page, image=None)
+
+    assert region["text"] == source
+    assert region["table_cell_density"] < 0.3
+    assert "table_sparse_grid" in region["review_reasons"]
+
+
 def test_build_grid_returns_none_when_the_model_says_not_a_table():
     by_ref = {line["line_ref"]: line for line in _benefit_table()[:6]}
 

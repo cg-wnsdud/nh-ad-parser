@@ -130,6 +130,7 @@ P3에는 boolean만 보내고, 원인은 P1의 같은 Region에 있는 `review_r
 | `vlm_judge_low_confidence` | Judge 신뢰도가 0.7 미만 |
 | `table_unplaced_lines` | 표 셀 또는 주석에 들어가지 못한 OCR/PDF 줄이 있음 |
 | `table_low_confidence` | 표 구조 신뢰도가 0.7 미만 |
+| `table_sparse_grid` | 선언한 표 격자의 30% 미만만 채워져 구조를 정본으로 쓰지 않음 |
 | `ownership_low_confidence` | 상품 소유권 신뢰도가 0.7 미만 |
 | `ownership_unknown` | 어느 상품에 속하는지 확정하지 못함 |
 | `recovery_action_uncertain` | 미배정 줄 처리 방식을 확정하지 못함 |
