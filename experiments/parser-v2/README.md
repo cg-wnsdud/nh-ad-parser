@@ -4,9 +4,10 @@ spark-1118의 서버 파이프라인 YAML 결과에서 시작해 Region 소유�
 fc87 Gemma 판독·Judge, 템플릿 복수 라벨, P1/P3까지 단계적으로 연결하는 실험 공간이다.
 
 Region 텍스트는 PaddleX `block_content`와 좌표 기반 OCR/디지털 줄 중 하나를 미리 버리지
-않는다. 대부분 일치하면 `block_content`를 쓰고, 빈 표는 줄로 보완하며, 충돌은 VLM/Judge
-대상으로 표시한다. 상품 소유권 필드는 `product_id` 하나만 사용하고 `card_no`는 새 결과에
-만들지 않는다.
+않는다. PDF 내장 텍스트는 VLM이 다르게 읽어도 원문을 정본으로 보존하고, 이미지 OCR은
+VLM Reader/Judge가 교정할 수 있다. 표는 모든 OCR/PDF 줄이 셀 또는 주석에 배치됐을 때만
+격자 표현을 정본으로 쓴다. 상품 소유권 필드는 `product_id` 하나만 사용하고 `card_no`는
+새 결과에 만들지 않는다.
 
 설계와 단계별 완료 조건은
 [`../파싱-파이프라인-고도화-계획.md`](../파싱-파이프라인-고도화-계획.md)를 따른다.
@@ -87,6 +88,70 @@ label-studio.json의 `4-p3-semantic` 탭  product_id·복수 라벨·Region bbox
 VLM이 어떤 OCR/PDF 텍스트를 `decorative`로 판단해도 해당 텍스트와 bbox를 삭제하지 않는다.
 상세 판단과 후보는 P1에 남기고 P3에는 같은 `region_id`, 최종 텍스트, bbox와
 `needs_review`만 전달한다. VLM은 제공된 ID를 선택할 뿐 새로운 bbox를 만들지 않는다.
+
+## P3 Region 계약
+
+P3는 영역을 라벨별 자식 영역으로 다시 쪼개지 않는다. 레이아웃에서 얻은 큰 Region을
+유지하고 `labels` 배열에 해당하는 구분값을 모두 붙인다. 화면에서는 `bbox`로 대략적인
+위치를 보여 주며, 더 자세한 근거가 필요하면 같은 `region_id`의 P1 OCR/PDF 줄 좌표를
+조회한다.
+
+```json
+{
+  "region_id": "p1_r020",
+  "product_id": "product_1",
+  "bbox": [243, 518, 1570, 708],
+  "selected_text": "...",
+  "labels": ["가입대상", "금리"],
+  "kind": "table",
+  "needs_review": true,
+  "text_source": "ocr",
+  "table": {"grid": {}, "cells": [], "notes": []}
+}
+```
+
+`text_source`는 `ocr` 또는 `vlm`만 사용한다. 세부 후보와 판정 이력은 P1에 남는다.
+이 구조의 계약 버전은 `nh-ad-region-review-input-v4`다.
+
+## `needs_review`의 의미
+
+이 값은 **광고 심의 결과가 아니다.** 파싱 파이프라인이 최종 텍스트·표 구조·상품 소유권
+또는 라벨을 자동 확정하기 어려워 원문 대조가 필요하다는 품질 신호다. 심의 단계는 이 값을
+참고할 수 있지만 `위반/충족/판정불가`는 별도로 판정해야 한다.
+
+P3에는 boolean만 보내고, 원인은 P1의 같은 Region에 있는 `review_reasons`에서 확인한다.
+
+| 사유 코드 | 의미 |
+| --- | --- |
+| `digital_text_vlm_disagreement` | PDF 내장 텍스트와 VLM 판독이 달라 PDF 원문을 보존함 |
+| `ocr_vlm_disagreement` | 이미지 OCR과 VLM 판독이 다르고 Judge를 확정하지 못함 |
+| `vlm_only_text` | OCR/PDF 글자 좌표 없이 VLM만 글자를 읽음 |
+| `vlm_read_failed` | Region VLM 판독 호출 실패 |
+| `vlm_judge_low_confidence` | Judge 신뢰도가 0.7 미만 |
+| `table_unplaced_lines` | 표 셀 또는 주석에 들어가지 못한 OCR/PDF 줄이 있음 |
+| `table_low_confidence` | 표 구조 신뢰도가 0.7 미만 |
+| `ownership_low_confidence` | 상품 소유권 신뢰도가 0.7 미만 |
+| `ownership_unknown` | 어느 상품에 속하는지 확정하지 못함 |
+| `recovery_action_uncertain` | 미배정 줄 처리 방식을 확정하지 못함 |
+| `recovery_low_confidence` | 미배정 줄 처리 신뢰도가 0.7 미만 |
+| `template_unresolved` | 상품 템플릿을 확정하지 못함 |
+| `label_low_confidence` | 구분값 라벨 신뢰도가 0.7 미만 |
+
+라벨이 없다는 사실만으로 `needs_review=true`가 되지는 않는다. 광고 수식 문구처럼 어느
+템플릿 구분값에도 해당하지 않는 정상 Region이 있기 때문이다. 대신 템플릿 용어 별칭은
+결정론 규칙으로 보완한다. 현재 `이자지급방식/방법/주기`는 `이자지급시기`로 정규화한다.
+
+## 페이지 전체 VLM과 Region VLM의 역할
+
+- 페이지 전체 또는 긴 페이지 의미 밴드: 상품 경계, Region 소유권, 흩어진 표 조각,
+  `field_list`, 공통 고지를 찾는다.
+- 표 구조: 빨간 대상 박스를 표시한 페이지 전체 이미지와 표 상세 crop을 함께 본다.
+- 상품별 라벨링: 페이지 전체 박스 이미지와 각 Region 확대 시트를 함께 본다.
+- 글자 전사: 이웃 문장이 섞이지 않도록 bbox 밖을 가린 Region crop만 본다.
+
+VLM은 표·문단의 **관계와 의미**를 판단하고, 최종 글자와 좌표는 OCR/PDF 근거에서
+조립한다. 상품 소유권을 정하기 전에는 미배정 줄을 큰 표로 미리 합치지 않으므로 좌우의
+서로 다른 상품 표가 하나가 되는 일을 막는다.
 
 일반 페이지의 의미 판정은 페이지 전체 1회다. OCR 단계에서 긴 페이지로 판정된 입력은
 같은 축을 2~4개 문맥 밴드로 나누며, 각 Region/복구 후보 ID는 중심점 기준으로 정확히 한

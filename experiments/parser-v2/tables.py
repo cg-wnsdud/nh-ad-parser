@@ -17,10 +17,11 @@ VLM은 **어느 Region 이 한 표인지 고르고 셀을 배치**할 뿐이다.
 from __future__ import annotations
 
 import copy
+import re
 from statistics import median
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from nh_parser.vlm import client as vlm_client
 
@@ -35,6 +36,7 @@ ROW_GAP_FACTOR = 3.0
 MIN_LINES = 5
 # crop 에 주는 여백. 표 테두리와 머리글이 잘리면 모델이 열을 못 센다.
 CROP_PAD = 24
+NOTE_START = re.compile(r"^\s*(?:주\s*\d+\s*\)|※)")
 
 
 def _bbox(line: dict[str, Any]) -> list[int]:
@@ -253,7 +255,16 @@ def place_cells(
         f"text={' '.join(str(line.get('text') or '').split())}"
         for ref, line in by_ref.items()
     )
-    prompt = f"""당신은 표 구조 판독기입니다. 이미지는 표 하나를 잘라낸 것입니다.
+    overview = image.convert("RGB").copy()
+    draw = ImageDraw.Draw(overview)
+    stroke = max(4, round(min(image.size) / 300))
+    draw.rectangle([int(value) for value in box], outline="#e53935", width=stroke)
+
+    prompt = f"""당신은 표 구조 판독기입니다.
+
+첫 번째 이미지는 페이지 전체이며 빨간 사각형이 대상 표입니다. 두 번째 이미지는
+그 사각형을 확대한 상세 화면입니다. 전체 화면은 어느 상품과 문단에 속한 표인지,
+상세 화면은 실제 행·열과 주석을 판단하는 데 사용하세요.
 
 아래 줄 {len(refs)}개를 표의 행(row)과 열(col)에 배치하세요.
 
@@ -270,6 +281,7 @@ def place_cells(
     result = vlm_client.chat_json(
         [
             {"type": "text", "text": prompt},
+            vlm_client.image_part(overview, box=(1000, 1600), quality=82),
             vlm_client.image_part(crop, box=(1400, 2400), quality=92),
         ],
         schema_name="parser_v2_table_cells",
@@ -291,6 +303,20 @@ def build_grid(
     if rows <= 0 or cols <= 0:
         return None
 
+    # 긴 각주가 시작된 y 아래의 줄은 VLM이 표 행으로 반환하더라도 notes로 돌린다.
+    # 셀 안의 짧은 `주1)` 표시는 제외하고, 설명이 붙은 실제 각주 시작만 경계로 쓴다.
+    note_starts = [
+        _bbox(line)[1]
+        for line in by_ref.values()
+        if NOTE_START.match(str(line.get("text") or ""))
+        and len("".join(str(line.get("text") or "").split())) >= 8
+    ]
+    note_y = min(note_starts) if note_starts else None
+    automatic_notes = {
+        ref for ref, line in by_ref.items()
+        if note_y is not None and _bbox(line)[1] >= note_y
+    }
+
     placed: dict[str, dict[str, Any]] = {}
     for item in result.get("cells") or []:
         ref = str(item.get("line_ref") or "")
@@ -303,6 +329,9 @@ def build_grid(
     invalid_refs: set[str] = set()
     for ref, item in placed.items():
         row, col = int(item.get("row") or 0), int(item.get("col") or 0)
+        if ref in automatic_notes:
+            note_buckets.setdefault(_bbox(by_ref[ref])[1], []).append(by_ref[ref])
+            continue
         # VLM이 "표는 3행"이라고 해놓고 각주를 row=3,4,5로 반환하는 경우가
         # 있다. 표 밖의 아래쪽 행은 셀로 버리지 않고 관련 각주로 보존한다.
         if row >= rows and 0 <= col < cols:
@@ -338,6 +367,10 @@ def build_grid(
     if not cells:
         return None
 
+    # 모델이 아예 배치하지 않은 각주도 원문 좌표가 있으면 notes로 보존한다.
+    for ref in automatic_notes - set(placed):
+        note_buckets.setdefault(_bbox(by_ref[ref])[1], []).append(by_ref[ref])
+
     notes = []
     for row in sorted(note_buckets):
         ordered = sorted(note_buckets[row], key=lambda line: (_bbox(line)[1], _bbox(line)[0]))
@@ -350,13 +383,16 @@ def build_grid(
             "bbox": _union([_bbox(line) for line in ordered]),
         })
 
+    # 각주를 표 행에서 꺼냈다면 끝의 빈 행도 함께 제거한다.
+    rows = min(rows, max(int(cell["row"]) for cell in cells) + 1)
     grid = {"rows": rows, "cols": cols}
     return {
         "grid": grid,
         "cells": cells,
         "notes": notes,
         "unplaced_line_refs": [
-            ref for ref in by_ref if ref not in placed or ref in invalid_refs
+            ref for ref in by_ref
+            if (ref not in placed or ref in invalid_refs) and ref not in automatic_notes
         ],
         "confidence": float(result.get("confidence") or 0.0),
         "analysis": str(result.get("analysis") or ""),

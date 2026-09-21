@@ -159,7 +159,11 @@ def test_decorative_vlm_decision_never_deletes_ocr_text_or_bbox():
     assert page["regions"][0]["text"] == "보장금액"
     assert page["regions"][0]["bbox"] == [100, 200, 300, 230]
     assert page["regions"][0]["vlm_excluded"] is True
-    assert page["regions"][0]["needs_review"] is True
+    # 장식 판정만으로는 검수를 켜지 않는다. 판정이 끝난 영역이라 사람에게 물을
+    # 것이 없고, 켜 두면 검수 목록이 정상 동작으로 가득 찬다(실측 2026-09-21:
+    # 26건 검수 170 중 152가 라벨 없음, 그중 7이 장식 판정). 오판이어도 텍스트와
+    # bbox 는 위에서 보듯 그대로 남고 `vlm_excluded` 로 따로 걸러낼 수 있다.
+    assert page["regions"][0]["needs_review"] is False
 
 
 def test_reading_order_keeps_engine_order_and_places_context_after_target():

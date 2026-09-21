@@ -78,8 +78,8 @@ def test_paragraph_lines_are_not_mistaken_for_a_table():
     assert not tables.looks_like_grid(lines)
 
 
-def test_table_lines_become_one_candidate_instead_of_thirteen_fragments():
-    """복구 후보 생성 **앞에서** 표를 떼어내야 낱개로 흩어지지 않는다."""
+def test_prepare_page_keeps_table_lines_separate_until_product_ownership():
+    """좌우 상품 경계를 알기 전에 표 하나로 합치지 않으며 줄은 모두 보존한다."""
     page = {
         "page_no": 1,
         "canvas": [1654, 2339],
@@ -93,15 +93,9 @@ def test_table_lines_become_one_candidate_instead_of_thirteen_fragments():
     prepared = full_pipeline._prepare_page(page)
 
     candidates = prepared["recovery_candidates"]
-    kinds = [item.get("kind") for item in candidates]
-    assert kinds.count("table") == 1
-    table = next(item for item in candidates if item.get("kind") == "table")
-    assert len(table["line_refs"]) == 12
-    assert table["bbox"] == [560, 1842, 1534, 1924]
-    assert table["bbox_source"] == "ocr_pdf_lines"
-    # 표가 아닌 줄은 평소대로 복구 후보로 남는다. 줄은 하나도 잃지 않는다.
-    # `_prepare_page`가 line_ref를 `p1/unassigned/Lnnn`으로 다시 매기므로 그 뒤의
-    # 값으로 대조한다.
+    assert all(item.get("kind") != "table" for item in candidates)
+    # 페이지 전체 VLM이 상품 소유권과 table_areas를 정할 때까지 작은 후보로 두되,
+    # 줄은 하나도 잃지 않는다.
     every = {ref for item in candidates for ref in item["line_refs"]}
     assert every == {
         str(line["line_ref"]) for line in prepared["raw_unassigned_lines"]
@@ -174,6 +168,55 @@ def test_build_grid_keeps_rows_below_declared_grid_as_table_notes():
     assert grid["text_grid"] == "| 구분 |\n|---|\n| 2% 적립 |"
     assert grid["notes"][0]["text"] == "주1) 전월 실적 조건 적용"
     assert grid["unplaced_line_refs"] == []
+
+
+def test_build_grid_moves_long_footnote_rows_out_of_an_inflated_grid():
+    by_ref = {
+        "H": _line("H", 10, 10, 100, 20, "우대조건"),
+        "V": _line("V", 10, 30, 100, 40, "2.0%p"),
+        "N1": _line("N1", 10, 70, 300, 80, "주1) 연금 입금 실적 기준"),
+        "N2": _line("N2", 10, 90, 400, 100, "최근 3개월 중 2개월 이상 입금"),
+    }
+    result = {
+        "analysis": "각주까지 4행으로 오판", "rows": 4, "cols": 1,
+        "confidence": 0.9,
+        "cells": [
+            {"line_ref": "H", "row": 0, "col": 0, "is_header": True},
+            {"line_ref": "V", "row": 1, "col": 0, "is_header": False},
+            {"line_ref": "N1", "row": 2, "col": 0, "is_header": False},
+            {"line_ref": "N2", "row": 3, "col": 0, "is_header": False},
+        ],
+    }
+
+    grid = tables.build_grid(result, by_ref)
+
+    assert grid["grid"] == {"rows": 2, "cols": 1}
+    assert [note["text"] for note in grid["notes"]] == [
+        "주1) 연금 입금 실적 기준", "최근 3개월 중 2개월 이상 입금",
+    ]
+    assert grid["unplaced_line_refs"] == []
+
+
+def test_partial_table_keeps_all_source_lines_as_selected_text(monkeypatch):
+    lines = _benefit_table()[:6]
+    region = {
+        "region_id": "p1_r001", "bbox": [560, 1842, 1369, 1892],
+        "kind": "table", "text": "\n".join(line["text"] for line in lines),
+        "text_source": "digital_ocr_lines", "lines": lines,
+    }
+    page = {"page_no": 1, "regions": [region], "table_areas": []}
+    monkeypatch.setattr(full_pipeline.tables, "place_cells", lambda image, item: {
+        "grid": {"rows": 2, "cols": 3}, "cells": [], "notes": [],
+        "unplaced_line_refs": ["L04", "L05"], "confidence": 1.0,
+        "analysis": "일부 누락", "text_grid": "| 담보명 | 보장금액 |",
+    })
+
+    full_pipeline._place_tables(page, image=None)
+
+    assert region["text"] == "\n".join(line["text"] for line in lines)
+    assert region["text_source"] == "ocr_table_lines_fallback"
+    assert region["needs_review"] is True
+    assert "table_unplaced_lines" in region["review_reasons"]
 
 
 def test_build_grid_returns_none_when_the_model_says_not_a_table():

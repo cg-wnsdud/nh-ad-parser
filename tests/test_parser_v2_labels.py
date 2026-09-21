@@ -97,9 +97,11 @@ def test_p3_keeps_one_region_with_plain_label_list_and_no_indexes():
     p3 = export_v2.build_p3(p1)
 
     output = p3["pages"][0]["regions"][0]
+    assert p3["contract"]["version"] == "nh-ad-region-review-input-v4"
     assert output["region_id"] == "p1_r001"
     assert output["selected_text"] == region["text"]
     assert output["labels"] == ["가입대상", "가입금액"]
+    assert output["text_source"] == "ocr"
     assert p3["pages"][0]["canvas"] == [1654, 2339]
     assert "span_id" not in str(p3)
     assert "location_index" not in p3
@@ -115,3 +117,20 @@ def test_multiple_labels_do_not_create_review_by_themselves():
 
     assert output["needs_review"] is False
     assert len(output["labels"]) == 2
+
+
+def test_explicit_business_term_alias_adds_the_catalog_label():
+    assert semantic.add_explicit_alias_labels(
+        "이자지급방식 만기일시지급식", [], ["상품명", "이자지급시기"],
+    ) == ["이자지급시기"]
+
+
+def test_short_product_title_cannot_inherit_page_labels():
+    region = {
+        "text": "NH올원e통장",
+        "layout_observation": {"label": "paragraph_title"},
+    }
+
+    assert semantic.constrain_title_labels(
+        region, ["상품명", "가입대상", "금리", "유의사항"],
+    ) == ["상품명"]

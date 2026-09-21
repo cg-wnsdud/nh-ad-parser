@@ -17,8 +17,14 @@ from nh_parser.vlm import client as vlm_client
 import reading
 import tables
 from export_v2 import build_p1, build_p3
+from quality import flag
 from recovery import build_recovery_candidates
-from semantic import analyze_page_context, analyze_product_labels
+from semantic import (
+    add_explicit_alias_labels,
+    analyze_page_context,
+    analyze_product_labels,
+    constrain_title_labels,
+)
 from templates import PAGE_COMMON, resolve_product_templates, review_units
 
 
@@ -49,14 +55,11 @@ def _prepare_page(page: dict[str, Any]) -> dict[str, Any]:
         line["line_ref"] = f"p{page_no}/unassigned/L{index:03d}"
     prepared["raw_unassigned_lines"] = copy.deepcopy(prepared.get("unassigned_lines") or [])
     unassigned = prepared.get("unassigned_lines") or []
-    # 표를 **먼저** 떼어낸다. 복구 후보 생성기는 행 간격을 좁게 잡아 서로 다른
-    # 항목이 섞이지 않게 만들어져 있어서, 그대로 두면 표 한 개가 셀 단위로
-    # 흩어진다(실측: `14. 대출성상품` 부가서비스 표가 13개 영역으로 분해됨).
-    grids = tables.table_candidates(unassigned, page_no=page_no)
-    claimed = {ref for candidate in grids for ref in candidate["line_refs"]}
-    rest = [line for line in unassigned if str(line["line_ref"]) not in claimed]
+    # 상품 소유권을 알기 전에 같은 높이의 줄을 표 하나로 합치면 좌우 상품의 표가
+    # 하나가 된다. 여기서는 작은 복구 후보로만 보존하고, 페이지 전체를 보는 의미
+    # 판정이 product_id와 table_areas를 정한 뒤 같은 상품 안에서만 합친다.
     prepared["recovery_candidates"] = sorted(
-        [*grids, *build_recovery_candidates(rest, page_no=page_no)],
+        build_recovery_candidates(unassigned, page_no=page_no),
         key=lambda item: ((item.get("bbox") or [0, 0])[1], (item.get("bbox") or [0, 0])[0]),
     )
     return prepared
@@ -143,9 +146,11 @@ def _apply_ownership(
         decision = by_region[region["region_id"]]
         region["product_id"] = decision["product_id"]
         region["semantic_labels"] = []
-        region["needs_review"] = bool(
-            decision.get("confidence", 0.0) < 0.7 or decision.get("product_id") == "unknown"
-        )
+        region["needs_review"] = False
+        if decision.get("confidence", 0.0) < 0.7:
+            flag(region, "ownership_low_confidence")
+        if decision.get("product_id") == "unknown":
+            flag(region, "ownership_unknown")
         region["semantic_decision"] = decision
 
     candidates = {item["candidate_id"]: item for item in page["recovery_candidates"]}
@@ -158,7 +163,7 @@ def _apply_ownership(
             # VLM의 decorative 판정은 오판할 수 있다. 특히 표의 `담보명`,
             # `보장금액` 같은 짧은 머리글을 장식으로 보는 사례가 있었다.
             # OCR/PDF가 실제 텍스트와 좌표를 준 이상 P3에서 삭제하지 않고,
-            # 일반 복구 Region으로 보존한 뒤 검수 대상으로 표시한다.
+            # 일반 복구 Region으로 보존한다. 판정 자체는 P1의 `vlm_excluded`에 남긴다.
             ignored_lines.extend(
                 {**copy.deepcopy(line), "ignore_reason": decision["reason"]}
                 for line in candidate["lines"]
@@ -182,14 +187,18 @@ def _apply_ownership(
                 "page_common" if decision["action"] == "page_common" else decision["product_id"]
             ),
             "semantic_labels": [],
-            "needs_review": bool(
-                decision["action"] in {"needs_review", "decorative"}
-                or decision.get("confidence", 0.0) < 0.7
-            ),
+            # `decorative` 는 검수 사유가 아니다 — VLM 이 장식이라고 **판정을 끝낸**
+            # 영역이라 사람에게 다시 물을 것이 없다. `vlm_excluded` 로 따로 남긴다.
+            "needs_review": False,
             "vlm_excluded": decision["action"] == "decorative",
             "related_region_id": decision.get("target_region_id") or None,
             "semantic_decision": decision,
         })
+        recovered = page["regions"][-1]
+        if decision["action"] == "needs_review":
+            flag(recovered, "recovery_action_uncertain")
+        if decision.get("confidence", 0.0) < 0.7:
+            flag(recovered, "recovery_low_confidence")
     page["unassigned_lines"] = sorted(
         remaining.values(), key=lambda line: ((line.get("bbox") or [0, 0])[1], (line.get("bbox") or [0, 0])[0])
     )
@@ -331,24 +340,38 @@ def _place_tables(page: dict[str, Any], image: Image.Image) -> None:
         region["table_status"] = (
             "placed" if not grid["unplaced_line_refs"] else "partial"
         )
-        # 원래 줄 이어붙이기는 후보로 남기고 격자 표현을 정본으로 쓴다. 두 값 모두
-        # 같은 OCR 줄에서 나오므로 새 텍스트가 생기지 않는다.
+        # 원래 줄 이어붙이기는 후보로 남긴다. 모든 줄이 셀/주석에 배치되고 신뢰도가
+        # 충분할 때만 격자 표현을 정본으로 쓴다. 불완전 표가 정확한 OCR 줄을 P3에서
+        # 가리는 일을 막는다.
+        assembled = str(region.get("text") or "").strip() or "\n".join(
+            str(line.get("text") or "").strip() for line in lines
+            if str(line.get("text") or "").strip()
+        )
         region["text_candidates"] = {
             **(region.get("text_candidates") or {}),
-            "line_assembled": region.get("text"),
+            "line_assembled": assembled,
+            "table_grid": grid["text_grid"],
         }
         note_text = "\n".join(
             str(note.get("text") or "").strip() for note in grid.get("notes") or []
             if str(note.get("text") or "").strip()
         )
-        region["text"] = "\n\n".join(
-            value for value in (grid["text_grid"], note_text) if value
-        )
-        region["text_source"] = (
-            "ocr_table_grid_with_notes" if note_text else "ocr_table_grid"
-        )
-        if grid["unplaced_line_refs"] or grid["confidence"] < 0.7:
-            region["needs_review"] = True
+        complete = not grid["unplaced_line_refs"] and grid["confidence"] >= 0.7
+        if complete:
+            region["text"] = "\n\n".join(
+                value for value in (grid["text_grid"], note_text) if value
+            )
+            region["text_source"] = (
+                "ocr_table_grid_with_notes" if note_text else "ocr_table_grid"
+            )
+        else:
+            region["text"] = assembled
+            # 표 구조는 P1/P3에 남지만 selected_text는 모든 원문 줄을 보존한다.
+            region["text_source"] = "ocr_table_lines_fallback"
+            if grid["unplaced_line_refs"]:
+                flag(region, "table_unplaced_lines")
+            if grid["confidence"] < 0.7:
+                flag(region, "table_low_confidence")
         placed += 1
     page["table_count"] = placed
 
@@ -376,7 +399,7 @@ def _label_pages(
                 # 템플릿을 확정하지 못한 상품은 라벨을 억지로 붙이지 않고 남긴다.
                 for region in regions:
                     region["semantic_labels"] = []
-                    region["needs_review"] = True
+                    flag(region, "template_unresolved")
                     region["label_decision"] = {
                         "region_id": region["region_id"],
                         "labels": [],
@@ -397,10 +420,21 @@ def _label_pages(
             by_region = {item["region_id"]: item for item in result["region_labels"]}
             for region in regions:
                 decision = by_region[str(region["region_id"])]
-                region["semantic_labels"] = list(decision["labels"])
+                selected = add_explicit_alias_labels(
+                    region.get("text"), list(decision["labels"]), labels,
+                )
+                selected = constrain_title_labels(region, selected)
+                region["semantic_labels"] = selected
+                decision["labels"] = list(selected)
                 region["label_decision"] = decision
-                if not decision["labels"] or decision["confidence"] < 0.7:
-                    region["needs_review"] = True
+                # 라벨이 없는 것 자체는 검수 사유가 아니다. 광고 수식어구처럼
+                # 템플릿의 어느 구분값에도 해당하지 않는 문구가 정상적으로 존재한다.
+                # 검수가 필요한 쪽은 **붙였는데 확신이 낮은** 경우다 — 틀린 구분값이
+                # 붙는 편이 안 붙는 편보다 나쁘다.
+                # 실측(2026-09-21, 26건): 검수 170건 중 152건이 "라벨 없음"이었고,
+                # 그중 7건은 VLM 이 이미 장식으로 판정한 영역이었다.
+                if decision["confidence"] < 0.7:
+                    flag(region, "label_low_confidence")
         page["label_analysis"] = "\n".join(value for value in notes if value)
 
 

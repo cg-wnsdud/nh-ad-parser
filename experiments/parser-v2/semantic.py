@@ -34,6 +34,12 @@ ABSTAIN = "해당없음"
 # 18,840자에서 잘렸다. 15개면 약 6,600자로 넉넉히 들어간다.
 LABEL_CHUNK = 15
 
+# 템플릿의 정식 구분값과 광고에서 흔히 쓰는 표기 차이. 파일명·Region ID가 아니라
+# 업무 용어를 정규화하므로 새 입력에도 같은 규칙을 적용한다.
+LABEL_ALIASES = {
+    "이자지급시기": ("이자지급방식", "이자지급방법", "이자지급주기"),
+}
+
 
 def _short_text(value: Any, limit: int = 700) -> str:
     text = " ".join(str(value or "").split())
@@ -71,6 +77,57 @@ def _overlay(
         draw.rectangle(text_box, fill=color)
         draw.text((x0, y0), label, fill="white", font=font)
     return out
+
+
+def _contact_sheet(
+    image: Image.Image, regions: list[dict[str, Any]], *, columns: int = 3,
+) -> Image.Image:
+    """페이지 문맥과 별개로 각 Region 자체를 크게 볼 수 있는 판독 시트를 만든다."""
+    tile_w, tile_h, header = 460, 300, 30
+    rows = max(1, (len(regions) + columns - 1) // columns)
+    sheet = Image.new("RGB", (tile_w * columns, tile_h * rows), "white")
+    draw = ImageDraw.Draw(sheet)
+    try:
+        font = ImageFont.load_default(size=20)
+    except TypeError:
+        font = ImageFont.load_default()
+    for index, region in enumerate(regions):
+        box = region.get("bbox")
+        if not box:
+            continue
+        x0, y0, x1, y1 = (int(value) for value in box)
+        crop = image.crop((max(0, x0), max(0, y0), min(image.width, x1), min(image.height, y1))).convert("RGB")
+        crop.thumbnail((tile_w - 12, tile_h - header - 12), Image.Resampling.LANCZOS)
+        left = (index % columns) * tile_w
+        top = (index // columns) * tile_h
+        draw.rectangle([left, top, left + tile_w - 1, top + tile_h - 1], outline="#B0BEC5")
+        draw.text((left + 6, top + 4), str(region["region_id"]), fill="#0D47A1", font=font)
+        sheet.paste(crop, (left + 6, top + header))
+    return sheet
+
+
+def add_explicit_alias_labels(
+    text: Any, selected: list[str], allowed: list[str],
+) -> list[str]:
+    """Region 원문에 명시된 별칭을 정식 구분값으로 보완한다."""
+    compact = "".join(str(text or "").split())
+    output = [label for label in selected if label in allowed]
+    for canonical, aliases in LABEL_ALIASES.items():
+        if canonical not in allowed or canonical in output:
+            continue
+        if any("".join(alias.split()) in compact for alias in aliases):
+            output.append(canonical)
+    return output
+
+
+def constrain_title_labels(region: dict[str, Any], labels: list[str]) -> list[str]:
+    """짧은 상품 제목에 페이지 다른 곳의 구분값이 번지는 것을 막는다."""
+    layout = str((region.get("layout_observation") or {}).get("label") or "").casefold()
+    compact = "".join(str(region.get("text") or "").split())
+    if layout in {"doc_title", "paragraph_title", "title"} and len(compact) <= 60:
+        if "상품명" in labels:
+            return ["상품명"]
+    return labels
 
 
 # ── 1단계 · 소유권 ──────────────────────────────────────────────────
@@ -251,7 +308,9 @@ def analyze_page_ownership(
      예) `구분 | 적립율` 머리글 아래 값이 들어찬 표
    - field_list: 왼쪽이 항목명, 오른쪽이 그 값인 **서로 다른 항목의 나열**.
      예) `대출대상 | …`, `대출한도 | …`, `대출기간 | …` 이 세로로 이어지는 블록
-   둘을 헷갈리면 서로 다른 항목이 한 덩어리로 묶여 항목별 구분이 사라집니다.
+    둘을 헷갈리면 서로 다른 항목이 한 덩어리로 묶여 항목별 구분이 사라집니다.
+   같은 높이에 있어도 서로 다른 상품 패널에 속한 조각은 절대 같은 table_areas로
+   묶지 마세요. 표 하나가 여러 작은 ID로 쪼개졌다면 그 ID를 빠짐없이 고르세요.
 5. missing_visible_text: 이미지에는 분명히 보이지만 REGION/CANDIDATE 목록에 전혀 없는 문구만 적으세요.
 
 중요 규칙:
@@ -543,7 +602,13 @@ def analyze_product_labels(
 - 한 Region에 가입대상과 가입금액처럼 서로 다른 구분값이 함께 있으면
   labels=["가입대상", "가입금액"]처럼 모두 반환하세요.
 - 이 목록은 이미 이 상품 소속으로 확정된 영역입니다. 상품 소유권을 다시 판정하지 마세요.
-- 파란 박스가 이미지 위의 해당 영역입니다. 위치와 주변 문맥을 함께 보세요.
+- 첫 이미지는 페이지 전체의 파란 박스로 위치와 주변 문맥을 보여 줍니다.
+- 두 번째 이미지는 같은 Region을 ID별로 확대한 시트입니다. **라벨은 해당 Region
+  자체의 글자와 구조에 근거할 때만** 붙이세요. 다른 박스나 주변 문단에만 있는
+  항목을 가져오면 안 됩니다.
+- 유의사항 문장에 `대출한도`, `대출금리`라는 단어가 언급되더라도 그 문장이 해당
+  항목의 실제 값을 설명하는 것이 아니면 그 라벨을 붙이지 마세요.
+- 짧은 상품 제목 Region에는 상품명 외의 페이지 구분값을 붙이지 마세요.
 
 페이지 크기: {page['canvas']}
 {rows}
@@ -552,6 +617,9 @@ def analyze_product_labels(
             {"type": "text", "text": prompt},
             vlm_client.image_part(
                 _overlay(image, chunk, []), box=(1400, 2400), quality=90,
+            ),
+            vlm_client.image_part(
+                _contact_sheet(image, chunk), box=(1400, 1600), quality=92,
             ),
         ]
         schema = _label_schema(region_ids, labels)
